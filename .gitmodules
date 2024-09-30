@@ -1,0 +1,6 @@
+[submodule "keyboards/zmk-config-d3kb"]
+	path = keyboards/zmk-config-d3kb
+	url = https://github.com/TakeshiAkehi/zmk-config-d3kb.git
+[submodule "keyboards/zmk-config-d3kb2"]
+	path = keyboards/zmk-config-d3kb2
+	url = https://github.com/TakeshiAkehi/zmk-config-d3kb2.git
