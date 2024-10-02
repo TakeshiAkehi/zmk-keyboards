@@ -4,3 +4,6 @@
 [submodule "keyboards/zmk-config-d3kb2"]
 	path = keyboards/zmk-config-d3kb2
 	url = https://github.com/TakeshiAkehi/zmk-config-d3kb2.git
+[submodule "keyboards/zmk-config-fish"]
+	path = keyboards/zmk-config-fish
+	url = https://github.com/TakeshiAkehi/zmk-config-fish.git

@@ -37,10 +37,12 @@ class subprocessRunner:
 
 
 class zmkContainer:
-    def __init__(self, name, mountdir):
+    def __init__(self, name, mountdir, force_new=False):
         # self.IMAGE = "zmkfirmware/zmk-dev-arm:stable"
         self.IMAGE = "zmkfirmware/zmk-dev-arm:3.5"
         self.docker_cli = docker.from_env()
+        if force_new:
+            self._remove_container(name)
         self.container = self._start_container(name, mountdir)
         self.mountdir = mountdir
         self.name = name
@@ -70,6 +72,17 @@ class zmkContainer:
         self.container = container
         return container
 
+    def _remove_container(self, name):
+        try:
+            container = self.docker_cli.containers.get(name)
+        except docker.errors.NotFound:
+            pass
+
+        print("killing existing container")
+        if container.status == "running":
+            container.stop()
+        container.remove()
+
     def exec(self, cmd, workdir: Path):
         print("executing : %s" % cmd)
         _, responce = self.container.exec_run(cmd, workdir=str(workdir), stream=True)
@@ -98,7 +111,7 @@ class zmkBuilder:
             raise Exception("conf directory not fourd : %s" % self.confdir)
 
         self._add_gitignore()
-        self.container = zmkContainer(self.container_name, self.workdir_top)
+        self.workdir_top.mkdir(exist_ok=True)
 
     def _add_gitignore(self):
         gitignore = self.curdir / ".gitignore"
@@ -113,6 +126,7 @@ class zmkBuilder:
             f.write(self.workdir_top.name)
 
     def init(self):
+        self.container = zmkContainer(self.container_name, self.workdir_top, force_new=True)
         if self.workdir.exists():
             self.container.exec(f"chmod 777 -R .", self.workdir)
             shutil.rmtree(self.workdir)
@@ -121,10 +135,12 @@ class zmkBuilder:
         self.container.exec(f"west init -l {self.wconfdir}", self.workdir)
 
     def update(self):
+        self.container = zmkContainer(self.container_name, self.workdir_top)
         shutil.copytree(self.confdir, self.wconfdir, dirs_exist_ok=True)
         self.container.exec(f"west update", self.workdir)
 
     def build(self):
+        self.container = zmkContainer(self.container_name, self.workdir_top)
         self.wbuilddir.mkdir(exist_ok=True)
         self.container.exec(f"west zephyr-export", self.workdir)
         shutil.copytree(self.boardsdir, self.wboardsdir, dirs_exist_ok=True)
@@ -142,6 +158,14 @@ class zmkBuilder:
     def _parse_build_list(self, yaml_file):
         with open(yaml_file, "r") as yml:
             config = yaml.safe_load(yml)
+        if config is None:
+            raise Exception("build.yaml is empty")
+        if "include" not in config:
+            raise Exception("'include' node is required in build.yaml")
+        for c in config["include"]:
+            if "board" not in c or "shield" not in c:
+                raise Exception("both 'board' and 'shield' node is required in build.yaml::include")
+
         ret = [(c["board"], c["shield"]) for c in config["include"]]
         return ret
 
