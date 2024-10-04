@@ -139,21 +139,24 @@ class zmkBuilder:
         shutil.copytree(self.confdir, self.wconfdir, dirs_exist_ok=True)
         self.container.exec(f"west update", self.workdir)
 
-    def build(self):
+    def build(self, prinstine):
         self.container = zmkContainer(self.container_name, self.workdir_top)
         self.wbuilddir.mkdir(exist_ok=True)
         self.container.exec(f"west zephyr-export", self.workdir)
         shutil.copytree(self.boardsdir, self.wboardsdir, dirs_exist_ok=True)
-        for board, shield in self._parse_build_list(self.yaml_file):
+        build_list = self._parse_build_list(self.yaml_file)
+        print("build list : %s" % build_list)
+        for board, shield in build_list:
             print("building %s-%s" % (board, shield))
             builddir = self.wbuilddir / shield
-            self._build(board, shield, builddir)
+            self._build(board, shield, builddir, prinstine)
             self.container.exec(f"chmod 777 -R .", builddir)
             uf2 = self.wbuilddir / shield / "zephyr/zmk.uf2"
             if uf2.exists():
                 shutil.copy(uf2, self.workdir_top / (shield + ".uf2"))
             else:
                 print("uf2 not found")
+                raise Exception("build failed, uf2 not found")
 
     def _parse_build_list(self, yaml_file):
         with open(yaml_file, "r") as yml:
@@ -162,29 +165,36 @@ class zmkBuilder:
             raise Exception("build.yaml is empty")
         if "include" not in config:
             raise Exception("'include' node is required in build.yaml")
+
+        ret = []
         for c in config["include"]:
             if "board" not in c or "shield" not in c:
                 raise Exception("both 'board' and 'shield' node is required in build.yaml::include")
+            if isinstance(c["shield"], str):
+                ret.append([c["board"], c["shield"]])
+            elif isinstance(c["shield"], list):
+                for shield in c["shield"]:
+                    ret.append([c["board"], shield])
 
-        ret = [(c["board"], c["shield"]) for c in config["include"]]
         return ret
 
-    def _build(self, board, shield, builddir):
+    def _build(self, board, shield, builddir, prinstine):
         appdir = self.workdir / "zmk/app"
+        prinstineflag = "-p" if prinstine else ""
         self.container.exec(
-            f"west build -p -s {appdir} -b {board} -d {builddir} -- -DSHIELD={shield} -DZMK_CONFIG={self.wconfdir}",
+            f"west build {prinstineflag} -s {appdir} -b {board} -d {builddir} -- -DSHIELD={shield} -DZMK_CONFIG={self.wconfdir}",
             self.workdir,
         )
 
 
-def main(yaml_list: List[Path], init: bool, update: bool):
+def main(yaml_list: List[Path], init: bool, update: bool, prinstine: bool):
     for yaml_file in yaml_list:
         zmk_builder = zmkBuilder(yaml_file)
         if init:
             zmk_builder.init()
         if update or init:
             zmk_builder.update()
-        zmk_builder.build()
+        zmk_builder.build(prinstine)
 
 
 def handle_args(args: List[str]):
@@ -192,6 +202,7 @@ def handle_args(args: List[str]):
     parser.add_argument("build_yaml", nargs="+", type=Path)
     parser.add_argument("--init", action="store_true", default=False)
     parser.add_argument("--update", action="store_true", default=False)
+    parser.add_argument("--prinstine", "-p", action="store_true", default=False)
     parsed = parser.parse_args(args)
 
     build_yaml: Path = parsed.build_yaml
@@ -203,13 +214,14 @@ def handle_args(args: List[str]):
         "yaml_list": build_yaml,
         "init": parsed.init,
         "update": parsed.update,
+        "prinstine": parsed.prinstine,
     }
     return ret
 
 
 if __name__ == "__main__":
     if "debugpy" in sys.modules:
-        args = ["keyboards/zmk-config-d3kb/build.yaml"]
+        args = ["keyboards/zmk-config-d3kb2/build.yaml"]
         # args = ["keyboards/zmk-config-d3kb/build.yaml", "--init"]
     else:
         args = sys.argv[1:]
