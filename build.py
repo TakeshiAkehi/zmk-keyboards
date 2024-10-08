@@ -76,7 +76,7 @@ class zmkContainer:
         try:
             container = self.docker_cli.containers.get(name)
         except docker.errors.NotFound:
-            pass
+            return
 
         print("killing existing container")
         if container.status == "running":

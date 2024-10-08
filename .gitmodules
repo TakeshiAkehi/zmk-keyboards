@@ -7,3 +7,6 @@
 [submodule "keyboards/zmk-config-fish"]
 	path = keyboards/zmk-config-fish
 	url = https://github.com/TakeshiAkehi/zmk-config-fish.git
+[submodule "keyboards/zmk-config-s3kb"]
+	path = keyboards/zmk-config-s3kb
+	url = https://github.com/TakeshiAkehi/zmk-config-s3kb.git
