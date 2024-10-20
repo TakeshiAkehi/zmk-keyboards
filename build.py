@@ -43,9 +43,16 @@ class zmkContainer:
         self.docker_cli = docker.from_env()
         if force_new:
             self._remove_container(name)
+        self._pull_image(self.IMAGE)
         self.container = self._start_container(name, mountdir)
         self.mountdir = mountdir
         self.name = name
+
+    def _pull_image(self,IMAGE):
+        try:
+            self.docker_cli.images.get(IMAGE)
+        except docker.errors.ImageNotFound:
+            subprocessRunner().run("docker pull %s"%IMAGE)
 
     def _start_container(self, name, workdir):
         try:
