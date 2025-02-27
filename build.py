@@ -48,11 +48,11 @@ class zmkContainer:
         self.mountdir = mountdir
         self.name = name
 
-    def _pull_image(self,IMAGE):
+    def _pull_image(self, IMAGE):
         try:
             self.docker_cli.images.get(IMAGE)
         except docker.errors.ImageNotFound:
-            subprocessRunner().run("docker pull %s"%IMAGE)
+            subprocessRunner().run("docker pull %s" % IMAGE)
 
     def _start_container(self, name, workdir):
         try:
@@ -153,10 +153,14 @@ class zmkBuilder:
         shutil.copytree(self.boardsdir, self.wboardsdir, dirs_exist_ok=True)
         build_list = self._parse_build_list(self.yaml_file)
         print("build list : %s" % build_list)
-        for board, shield in build_list:
+        for board, shield, snippet, cmake_args in build_list:
             print("building %s-%s" % (board, shield))
+            if snippet != "":
+                print(" - snippet = %s" % snippet)
+            if cmake_args != "":
+                print(" - cmake_args = %s" % cmake_args)
             builddir = self.wbuilddir / shield
-            self._build(board, shield, builddir, prinstine)
+            self._build(board, shield, builddir, prinstine, snippet=snippet, cmake_args=cmake_args)
             self.container.exec(f"chmod 777 -R .", builddir)
             uf2 = self.wbuilddir / shield / "zephyr/zmk.uf2"
             if uf2.exists():
@@ -177,21 +181,44 @@ class zmkBuilder:
         for c in config["include"]:
             if "board" not in c or "shield" not in c:
                 raise Exception("both 'board' and 'shield' node is required in build.yaml::include")
-            if isinstance(c["shield"], str):
-                ret.append([c["board"], c["shield"]])
-            elif isinstance(c["shield"], list):
-                for shield in c["shield"]:
-                    ret.append([c["board"], shield])
+            board = c["board"]
+            shield = c["shield"]
+            snippet = c["snippet"] if "snippet" in c else ""
+            cmake_args = c["cmake-args"] if "cmake-args" in c else ""
+            ret.append([board, shield, snippet, cmake_args])
+            # if isinstance(c["shield"], str):
+            #     ret.append([c["board"], c["shield"]])
+            # elif isinstance(c["shield"], list):
+            #     for shield in c["shield"]:
+            #         ret.append([c["board"], shield])
 
         return ret
 
-    def _build(self, board, shield, builddir, prinstine):
+    def _build(self, board, shield, builddir, prinstine, snippet="", cmake_args=""):
         appdir = self.workdir / "zmk/app"
-        prinstineflag = "-p" if prinstine else ""
-        self.container.exec(
-            f"west build {prinstineflag} -s {appdir} -b {board} -d {builddir} -- -DSHIELD={shield} -DZMK_CONFIG={self.wconfdir}",
-            self.workdir,
+        prinstine_flag = "-p" if prinstine else ""
+        snippet_flag = "" if snippet == "" else f"-S {snippet}"
+        # fmt: off
+        cmd = " ".join(
+            [
+                "west", "build",
+                prinstine_flag,
+                "-s", str(appdir),
+                "-b", board,
+                "-d", str(builddir),
+                snippet_flag,
+                "--",
+                f"-DSHIELD={shield}",
+                f"-DZMK_CONFIG={str(self.wconfdir)}",
+                cmake_args
+            ]
         )
+        # fmt: on
+        # cmd = f"west build {prinstine_flag} -s {appdir} -b {board} -d {builddir} -- -DSHIELD={shield} -DZMK_CONFIG={self.wconfdir}"
+        print("==build==")
+        print(f" workdir = {self.workdir}")
+        print(f" cmd = {cmd}")
+        self.container.exec(cmd, self.workdir)
 
 
 def main(yaml_list: List[Path], init: bool, update: bool, prinstine: bool):
@@ -228,7 +255,8 @@ def handle_args(args: List[str]):
 
 if __name__ == "__main__":
     if "debugpy" in sys.modules:
-        args = ["keyboards/zmk-config-d3kb2/build.yaml"]
+        args = ["keyboards/zmk-config-fish/build.yaml", "-p"]
+        # args = ["keyboards/zmk-config-d3kb2/build.yaml"]
         # args = ["keyboards/zmk-config-d3kb/build.yaml", "--init"]
     else:
         args = sys.argv[1:]
