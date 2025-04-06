@@ -153,7 +153,7 @@ class zmkBuilder:
         shutil.copytree(self.boardsdir, self.wboardsdir, dirs_exist_ok=True)
         build_list = self._parse_build_list(self.yaml_file)
         print("build list : %s" % build_list)
-        for board, shield, snippet, cmake_args in build_list:
+        for board, shield, snippet, cmake_args, artifact_name in build_list:
             print("building %s-%s" % (board, shield))
             if snippet != "":
                 print(" - snippet = %s" % snippet)
@@ -164,7 +164,8 @@ class zmkBuilder:
             self.container.exec(f"chmod 777 -R .", builddir)
             uf2 = self.wbuilddir / shield / "zephyr/zmk.uf2"
             if uf2.exists():
-                shutil.copy(uf2, self.workdir_top / (shield + ".uf2"))
+                tgt_name = artifact_name if artifact_name != "" else shield
+                shutil.copy(uf2, self.workdir_top / (tgt_name + ".uf2"))
             else:
                 print("uf2 not found")
                 raise Exception("build failed, uf2 not found")
@@ -185,7 +186,8 @@ class zmkBuilder:
             shield = c["shield"]
             snippet = c["snippet"] if "snippet" in c else ""
             cmake_args = c["cmake-args"] if "cmake-args" in c else ""
-            ret.append([board, shield, snippet, cmake_args])
+            artifact_name = c["artifact-name"] if "artifact-name" in c else ""
+            ret.append([board, shield, snippet, cmake_args, artifact_name])
             # if isinstance(c["shield"], str):
             #     ret.append([c["board"], c["shield"]])
             # elif isinstance(c["shield"], list):
