@@ -10,3 +10,6 @@
 [submodule "keyboards/zmk-config-s3kb"]
 	path = keyboards/zmk-config-s3kb
 	url = https://github.com/TakeshiAkehi/zmk-config-s3kb.git
+[submodule "keyboards/zmk-config-taiyaki"]
+	path = keyboards/zmk-config-taiyaki
+	url = https://github.com/TakeshiAkehi/zmk-config-taiyaki.git
