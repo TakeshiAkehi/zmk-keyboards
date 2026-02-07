@@ -39,7 +39,7 @@ class subprocessRunner:
 class zmkContainer:
     def __init__(self, name, mountdir, force_new=False):
         # self.IMAGE = "zmkfirmware/zmk-dev-arm:stable"
-        self.IMAGE = "zmkfirmware/zmk-dev-arm:3.5"
+        self.IMAGE = "zmkfirmware/zmk-dev-arm:4.1"
         self.docker_cli = docker.from_env()
         if force_new:
             self._remove_container(name)
