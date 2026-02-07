@@ -10,3 +10,4 @@
 | ZMK コードベースの取得・配置フロー | design/20260207-1745-zmk-codebase-acquisition-flow.md | Design | zmk, west, codebase-acquisition, zmk_work, dependency-resolution | 2026-02-07 |
 | ビルドスクリプトを Python から zsh に移行する | adr/20260207-1900-build-script-python-to-zsh-migration.md | ADR | build-script, zsh, fzf, docker-cli, python-migration | 2026-02-07 |
 | ビルドスクリプトの使い方 (build.zsh) | howto/20260207-1900-how-to-use-build-script.md | How-To | build-script, zsh, docker, fzf, firmware | 2026-02-07 |
+| ローカルモジュールオーバーライド機構 | design/20260207-2030-local-module-override.md | Design | zmk, zephyr-modules, EXTRA_ZEPHYR_MODULES, docker-mount, local-development | 2026-02-07 |

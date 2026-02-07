@@ -5,6 +5,7 @@ set -eu
 typeset -r DOCKER_IMAGE="zmkfirmware/zmk-dev-arm:4.1"
 typeset -r SCRIPT_DIR="${0:A:h}"
 typeset -r REPO_ROOT="${SCRIPT_DIR}"
+typeset -r ZMK_MODULES_DIR="$REPO_ROOT/zmk_modules"
 
 # ── State (set by parse_args / setup_paths) ──────────────────────────────────
 typeset -a yaml_files=()
@@ -44,6 +45,18 @@ check_dependencies() {
         log "warning: yq may not be Mike Farah's version — YAML parsing may behave unexpectedly"
     fi
     return 0
+}
+
+detect_local_modules() {
+    [[ ! -d "$ZMK_MODULES_DIR" ]] && return 0
+    local -a paths=()
+    for d in "$ZMK_MODULES_DIR"/*(/N); do
+        if [[ -f "$d/zephyr/module.yml" ]]; then
+            paths+=("$d")
+            log "  local module: ${d:t}"
+        fi
+    done
+    (( ${#paths[@]} > 0 )) && printf '%s' "${(j:;:)paths}"
 }
 
 # ── Argument Parsing ─────────────────────────────────────────────────────────
@@ -110,7 +123,7 @@ select_keyboards() {
 
 # ── Docker Container Management ──────────────────────────────────────────────
 container_ensure() {
-    local name="$1" mount="$2" force_new="${3:-false}"
+    local name="$1" mount="$2" force_new="${3:-false}" _recurse="${4:-false}"
 
     # Pull image if missing
     if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qF "$DOCKER_IMAGE"; then
@@ -125,22 +138,38 @@ container_ensure() {
 
     # Check current state
     local state
-    state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo "not_found")
+    state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null) || state="not_found"
 
     case "$state" in
-        running)
-            log "container already running: $name"
-            ;;
-        exited|created)
-            log "starting existing container: $name"
-            docker start "$name" >/dev/null
-            _wait_container_running "$name"
+        running|exited|created)
+            # Verify zmk_modules mount if the directory exists
+            if [[ "$_recurse" == false ]] && [[ -d "$ZMK_MODULES_DIR" ]]; then
+                local mounts
+                mounts=$(docker inspect --format '{{json .Mounts}}' "$name")
+                if ! echo "$mounts" | grep -q "$ZMK_MODULES_DIR"; then
+                    log "container missing zmk_modules mount — recreating"
+                    container_remove "$name"
+                    container_ensure "$name" "$mount" false true
+                    return $?
+                fi
+            fi
+            if [[ "$state" == "running" ]]; then
+                log "container already running: $name"
+            else
+                log "starting existing container: $name"
+                docker start "$name" >/dev/null
+                _wait_container_running "$name"
+            fi
             ;;
         not_found)
             log "creating new container: $name"
+            local -a vol_args=("-v" "${mount}:${mount}")
+            if [[ -d "$ZMK_MODULES_DIR" ]]; then
+                vol_args+=("-v" "$ZMK_MODULES_DIR:$ZMK_MODULES_DIR:ro")
+            fi
             docker run -d \
                 --name "$name" \
-                -v "${mount}:${mount}" \
+                "${vol_args[@]}" \
                 -w "$mount" \
                 "$DOCKER_IMAGE" \
                 tail -F /dev/null >/dev/null
@@ -246,18 +275,21 @@ builder_build() {
     docker_exec "$container_name" "$workdir" "west zephyr-export"
     cp -rT "$boardsdir" "$wboardsdir"
 
+    local extra_modules
+    extra_modules=$(detect_local_modules)
+
     log "parsing build targets from: $yaml_file"
     parse_build_yaml "$yaml_file" | while IFS='|' read -r board shield snippet cmake_args artifact_name; do
         log "building $board — $shield"
         [[ -n "$snippet" ]]    && log "  snippet = $snippet"
         [[ -n "$cmake_args" ]] && log "  cmake-args = $cmake_args"
 
-        build_target "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine"
+        build_target "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine" "$extra_modules"
     done
 }
 
 build_target() {
-    local board="$1" shield="$2" snippet="$3" cmake_args="$4" artifact_name="$5" pristine="$6"
+    local board="$1" shield="$2" snippet="$3" cmake_args="$4" artifact_name="$5" pristine="$6" extra_modules="$7"
     local appdir="$workdir/zmk/app"
     local builddir="$wbuilddir/$shield"
 
@@ -267,6 +299,9 @@ build_target() {
     cmd+=" -s $appdir -b $board -d $builddir"
     [[ -n "$snippet" ]] && cmd+=" -S $snippet"
     cmd+=" -- -DSHIELD=$shield -DZMK_CONFIG=$wconfdir"
+    if [[ -n "$extra_modules" ]]; then
+        cmd+=" '-DEXTRA_ZEPHYR_MODULES=$extra_modules'"
+    fi
     [[ -n "$cmake_args" ]] && cmd+=" $cmake_args"
 
     log "==build=="
