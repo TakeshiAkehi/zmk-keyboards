@@ -106,7 +106,8 @@ class zmkBuilder:
         self.boardsdir = self.curdir / "boards"
         self.confdir = self.curdir / "config"
 
-        self.workdir_top = self.curdir / "zmk_work"
+        self.repo_root = Path(__file__).parent.resolve()
+        self.workdir_top = self.repo_root / "zmk_work" / self.container_name
         self.workdir = self.workdir_top / "zmk"
         self.wconfdir = self.workdir / "config"
         self.wboardsdir = self.wconfdir / "boards"
@@ -117,20 +118,7 @@ class zmkBuilder:
         if not self.confdir.exists():
             raise Exception("conf directory not fourd : %s" % self.confdir)
 
-        self._add_gitignore()
-        self.workdir_top.mkdir(exist_ok=True)
-
-    def _add_gitignore(self):
-        gitignore = self.curdir / ".gitignore"
-        if gitignore.exists():
-            with open(gitignore, "r") as f:
-                lines = f.readlines()
-            for line in lines:
-                if line.startswith(self.workdir_top.name):
-                    return
-
-        with open(gitignore, "a") as f:
-            f.write(self.workdir_top.name)
+        self.workdir_top.mkdir(exist_ok=True, parents=True)
 
     def init(self):
         self.container = zmkContainer(self.container_name, self.workdir_top, force_new=True)

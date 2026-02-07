@@ -25,7 +25,7 @@ python build.py keyboards/<keyboard-name>/build.yaml -p
 python build.py keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml
 ```
 
-Output `.uf2` files are placed in `keyboards/<keyboard-name>/zmk_work/`.
+Output `.uf2` files are placed in `zmk_work/<keyboard-name>/`.
 
 ## Adding a New Keyboard
 
@@ -40,7 +40,7 @@ This clones the unified-zmk-config-template, initializes a new git repo, pushes 
 ### Build Flow
 
 1. `build.py` parses `build.yaml` for board/shield combinations
-2. Docker container (`zmkfirmware/zmk-dev-arm:3.5`) is started with `zmk_work/` mounted
+2. Docker container (`zmkfirmware/zmk-dev-arm:4.1`) is started with `zmk_work/<keyboard-name>/` mounted
 3. `west init -l config/` initializes the workspace (on `--init`)
 4. `west update` fetches ZMK and dependencies
 5. `west build` compiles each shield, producing `.uf2` files
@@ -53,9 +53,10 @@ zmk-config-<name>/
 ├── build.yaml              # Build targets (board, shield, cmake-args, artifact-name)
 ├── config/
 │   └── west.yml           # West manifest (ZMK version, extra modules)
-├── boards/shields/<name>/ # Shield definitions (.overlay, .keymap, .conf, .dtsi)
-└── zmk_work/              # Build workspace (created by build.py)
+└── boards/shields/<name>/ # Shield definitions (.overlay, .keymap, .conf, .dtsi)
 ```
+
+Build workspaces are created at `zmk_work/<keyboard-name>/` in the repository root (not inside submodules).
 
 ### build.yaml Format
 
@@ -81,3 +82,7 @@ include:
 - Python 3.8+ with `docker` and `pyyaml` packages
 - Docker daemon running
 - Virtual environment available at `.venv/`
+
+## Rules
+
+- When executing Python scripts (e.g., `build.py`), always activate the virtual environment first: `source .venv/bin/activate && python ...`

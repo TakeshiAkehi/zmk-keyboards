@@ -58,22 +58,22 @@ python build.py keyboards/zmk-config-d3kb2/build.yaml --init
 │   │   ├── build.yaml      # Build configuration file
 │   │   ├── boards/         # Board files
 │   │   ├── config/         # Configurations
-│   │   ├── zmk_work/       # Temporary work directory for ZMK
-│   │   ├── .gitignore      # Ignores build artifacts
 │   ├── zmk-config-other/   # Other configurations
-│
+├── zmk_work/                  # Build workspaces (per keyboard)
+│   ├── zmk-config-d3kb2/     # Build workspace for d3kb2
+│   ├── zmk-config-other/     # Build workspace for other keyboards
 └── README.md               # Documentation
 ```
 
 ## How It Works
 
 1. **Container Setup**
-   - A Docker container (`zmkfirmware/zmk-dev-arm:3.5`) is pulled and initialized.
+   - A Docker container (`zmkfirmware/zmk-dev-arm:4.1`) is pulled and initialized.
    - The required directories are mounted inside the container.
    - The container executes commands via `exec` for build steps.
 
 2. **Initialization (`--init`)**
-   - The working directory is created inside `zmk_work/`.
+   - The working directory is created at `zmk_work/<keyboard-name>/` in the repository root.
    - The ZMK project is initialized using `west init`.
    - Configuration files are copied into the workspace.
 
@@ -83,7 +83,7 @@ python build.py keyboards/zmk-config-d3kb2/build.yaml --init
 4. **Building Firmware**
    - Board and shield configurations are parsed from `build.yaml`.
    - The build process runs inside the container using `west build`.
-   - Compiled firmware (`.uf2` files) is copied to the `zmk_work/` directory.
+   - Compiled firmware (`.uf2` files) is copied to the `zmk_work/<keyboard-name>/` directory.
 
 ## Example YAML Configuration
 
@@ -105,7 +105,7 @@ include:
 - If you need to remove an existing container, pass `force_new=True` in the script.
 
 ### Build Failures
-- If the firmware build fails, check if `zmk.uf2` was generated in `zmk_work/build/`.
+- If the firmware build fails, check if `zmk.uf2` was generated in `zmk_work/<keyboard-name>/zmk/build/`.
 - Ensure all board and shield definitions are correct in `build.yaml`.
 
 ## License
