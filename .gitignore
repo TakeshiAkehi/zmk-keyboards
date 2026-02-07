@@ -3,3 +3,4 @@ __pycache__
 archive
 zmk_work
 zmk_modules
+.last_build
