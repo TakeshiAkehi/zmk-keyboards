@@ -8,3 +8,5 @@
 | ZMK Zephyr 3.5 → 4.1 マイグレーション | howto/20260206-0530-zmk-zephyr-4-1-migration.md | How-To | zmk, zephyr, migration, pmw3610, nfc-pins, kconfig | 2026-02-06 |
 | ZMK Zephyr 4.1 マイグレーション作業状況 | handoff/20260206-0535-zephyr-4-1-migration-status.md | Handoff | zmk, zephyr, migration, blocker, build-status | 2026-02-06 |
 | ZMK コードベースの取得・配置フロー | design/20260207-1745-zmk-codebase-acquisition-flow.md | Design | zmk, west, codebase-acquisition, zmk_work, dependency-resolution | 2026-02-07 |
+| ビルドスクリプトを Python から zsh に移行する | adr/20260207-1900-build-script-python-to-zsh-migration.md | ADR | build-script, zsh, fzf, docker-cli, python-migration | 2026-02-07 |
+| ビルドスクリプトの使い方 (build.zsh) | howto/20260207-1900-how-to-use-build-script.md | How-To | build-script, zsh, docker, fzf, firmware | 2026-02-07 |
