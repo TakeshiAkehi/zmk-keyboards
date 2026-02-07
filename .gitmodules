@@ -1,15 +1,15 @@
 [submodule "keyboards/zmk-config-d3kb"]
 	path = keyboards/zmk-config-d3kb
-	url = https://github.com/TakeshiAkehi/zmk-config-d3kb.git
+	url = git@github.com:TakeshiAkehi/zmk-config-d3kb.git
 [submodule "keyboards/zmk-config-d3kb2"]
 	path = keyboards/zmk-config-d3kb2
-	url = https://github.com/TakeshiAkehi/zmk-config-d3kb2.git
+	url = git@github.com:TakeshiAkehi/zmk-config-d3kb2.git
 [submodule "keyboards/zmk-config-fish"]
 	path = keyboards/zmk-config-fish
-	url = https://github.com/TakeshiAkehi/zmk-config-fish.git
+	url = git@github.com:TakeshiAkehi/zmk-config-fish.git
 [submodule "keyboards/zmk-config-s3kb"]
 	path = keyboards/zmk-config-s3kb
-	url = https://github.com/TakeshiAkehi/zmk-config-s3kb.git
+	url = git@github.com:TakeshiAkehi/zmk-config-s3kb.git
 [submodule "keyboards/zmk-config-taiyaki"]
 	path = keyboards/zmk-config-taiyaki
-	url = https://github.com/TakeshiAkehi/zmk-config-taiyaki.git
+	url = git@github.com:TakeshiAkehi/zmk-config-taiyaki.git
