@@ -49,7 +49,7 @@ ZMK モジュール（ドライバ、ビヘイビア等）は `west.yml` にリ�
 │   └── zmk-pmw3610-driver/          ← 既存モジュールの上書き
 │       └── zephyr/module.yml
 │
-├── build.zsh
+├── build.sh
 │   ├── detect_local_modules()        ← zmk_modules/ をスキャン
 │   ├── container_ensure()            ← マウント検証 + コンテナ作成
 │   └── build_target()                ← -DEXTRA_ZEPHYR_MODULES を注入
@@ -144,7 +144,7 @@ zmk_modules/ が存在しない → 機能全体がスキップ
 ## Testing Strategy
 
 - **手動テスト (Phase 2)**: 実際のキーボードビルドで検証。`zmk_modules/` の有無でビルド動作を比較
-- **シェルスクリプト構文チェック**: `zsh -n build.zsh` で構文エラーがないことを確認済み
+- **シェルスクリプト構文チェック**: `bash -n build.sh` および `zsh -n build.sh` で構文エラーがないことを確認済み
 
 ## Security Considerations
 

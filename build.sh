@@ -1,31 +1,31 @@
-#!/usr/bin/env zsh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-typeset -r DOCKER_IMAGE="zmkfirmware/zmk-dev-arm:4.1"
-typeset -r SCRIPT_DIR="${0:A:h}"
-typeset -r REPO_ROOT="${SCRIPT_DIR}"
-typeset -r ZMK_MODULES_DIR="$REPO_ROOT/zmk_modules"
+readonly DOCKER_IMAGE="zmkfirmware/zmk-dev-arm:4.1"
+readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+readonly REPO_ROOT="$SCRIPT_DIR"
+readonly ZMK_MODULES_DIR="$REPO_ROOT/zmk_modules"
 
 # ── State (set by parse_args / setup_paths) ──────────────────────────────────
-typeset -a yaml_files=()
-typeset    init_flag=false
-typeset    update_flag=false
-typeset    pristine_flag=false
+yaml_files=()
+init_flag=false
+update_flag=false
+pristine_flag=false
 
 # Per-keyboard paths (set by setup_paths)
-typeset container_name=""
-typeset confdir=""
-typeset boardsdir=""
-typeset workdir_top=""
-typeset workdir=""
-typeset wconfdir=""
-typeset wboardsdir=""
-typeset wbuilddir=""
+container_name=""
+confdir=""
+boardsdir=""
+workdir_top=""
+workdir=""
+wconfdir=""
+wboardsdir=""
+wbuilddir=""
 
 # ── Utilities ────────────────────────────────────────────────────────────────
-log()   { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*" }
-error() { printf "[ERROR] %s\n" "$*" >&2; return 1 }
+log()   { printf "[%s] %s\n" "$(date +%H:%M:%S)" "$*"; }
+error() { printf "[ERROR] %s\n" "$*" >&2; return 1; }
 
 check_dependencies() {
     local missing=false
@@ -50,19 +50,26 @@ check_dependencies() {
 detect_local_modules() {
     [[ ! -d "$ZMK_MODULES_DIR" ]] && return 0
     local -a paths=()
-    for d in "$ZMK_MODULES_DIR"/*(/N); do
+    local d
+    for d in "$ZMK_MODULES_DIR"/*/; do
+        [[ ! -d "$d" ]] && continue
         if [[ -f "$d/zephyr/module.yml" ]]; then
+            # Remove trailing slash for clean path
+            d="${d%/}"
             paths+=("$d")
-            log "  local module: ${d:t}"
+            log "  local module: ${d##*/}"
         fi
     done
-    (( ${#paths[@]} > 0 )) && printf '%s' "${(j:;:)paths}"
+    if (( ${#paths[@]} > 0 )); then
+        local IFS=";"
+        printf '%s' "${paths[*]}"
+    fi
 }
 
 # ── Argument Parsing ─────────────────────────────────────────────────────────
 show_help() {
     cat <<'HELP'
-Usage: build.zsh [OPTIONS] [build.yaml ...]
+Usage: build.sh [OPTIONS] [build.yaml ...]
 
 Build ZMK keyboard firmware using Docker containers.
 If no build.yaml files are given, launches fzf for interactive selection.
@@ -74,27 +81,24 @@ Options:
   -h, --help      Show this help
 
 Examples:
-  build.zsh keyboards/zmk-config-fish/build.yaml -p
-  build.zsh --init keyboards/zmk-config-d3kb2/build.yaml
-  build.zsh                                        # interactive fzf selection
+  build.sh keyboards/zmk-config-fish/build.yaml -p
+  build.sh --init keyboards/zmk-config-d3kb2/build.yaml
+  build.sh                                        # interactive fzf selection
 HELP
 }
 
 parse_args() {
-    local -a opts_init opts_update opts_pristine opts_help
-    zparseopts -D -E \
-        -init=opts_init \
-        -update=opts_update \
-        p=opts_pristine -pristine=opts_pristine \
-        h=opts_help -help=opts_help
-
-    [[ ${#opts_help} -gt 0 ]] && { show_help; exit 0 }
-    [[ ${#opts_init} -gt 0 ]] && init_flag=true
-    [[ ${#opts_update} -gt 0 ]] && update_flag=true
-    [[ ${#opts_pristine} -gt 0 ]] && pristine_flag=true
-
-    # Remaining positional args are yaml files
-    yaml_files=("$@")
+    yaml_files=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --init)     init_flag=true ;;
+            --update)   update_flag=true ;;
+            -p|--pristine) pristine_flag=true ;;
+            -h|--help)  show_help; exit 0 ;;
+            *)          yaml_files+=("$1") ;;
+        esac
+        shift
+    done
 
     # Validate that specified files exist
     for f in "${yaml_files[@]}"; do
@@ -105,10 +109,11 @@ parse_args() {
 # ── fzf Interactive Selection ────────────────────────────────────────────────
 select_keyboards() {
     local -a candidates=()
-    for f in "$REPO_ROOT"/keyboards/*/build.yaml(N); do
-        candidates+=("$f")
+    local f
+    for f in "$REPO_ROOT"/keyboards/*/build.yaml; do
+        [[ -f "$f" ]] && candidates+=("$f")
     done
-    [[ ${#candidates} -eq 0 ]] && error "no build.yaml files found in keyboards/"
+    [[ ${#candidates[@]} -eq 0 ]] && error "no build.yaml files found in keyboards/"
 
     if ! command -v fzf &>/dev/null; then
         error "fzf is required for interactive selection. Specify build.yaml files as arguments instead."
@@ -186,7 +191,7 @@ _wait_container_running() {
     local tries=0
     while [[ $(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null) != "running" ]]; do
         sleep 1
-        (( tries++ ))
+        (( tries++ )) || true
         [[ $tries -ge 30 ]] && error "container $name did not start within 30s"
     done
 }
@@ -209,11 +214,12 @@ docker_exec() {
 
 # ── Path Setup ───────────────────────────────────────────────────────────────
 setup_paths() {
-    local yaml_file="${1:A}"
+    local yaml_file
+    yaml_file="$(realpath "$1")"
 
-    container_name="${yaml_file:h:t}"
-    confdir="${yaml_file:h}/config"
-    boardsdir="${yaml_file:h}/boards"
+    container_name="$(basename "$(dirname "$yaml_file")")"
+    confdir="$(dirname "$yaml_file")/config"
+    boardsdir="$(dirname "$yaml_file")/boards"
     workdir_top="$REPO_ROOT/zmk_work/$container_name"
     workdir="$workdir_top/zmk"
     wconfdir="$workdir/config"
@@ -331,7 +337,7 @@ main() {
         local selected
         selected=$(select_keyboards)
         [[ -z "$selected" ]] && exit 0
-        yaml_files=("${(@f)selected}")
+        mapfile -t yaml_files <<< "$selected"
     fi
 
     for yaml_file in "${yaml_files[@]}"; do

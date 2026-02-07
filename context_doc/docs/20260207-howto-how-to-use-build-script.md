@@ -1,4 +1,4 @@
-# How-To: ビルドスクリプトの使い方 (build.zsh)
+# How-To: ビルドスクリプトの使い方 (build.sh)
 
 ## Problem
 
@@ -6,7 +6,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 
 ## Solution
 
-`build.zsh` は Docker コンテナ内で west (Zephyr のビルドツール) を実行し、`.uf2` ファームウェアファイルを生成する。fzf によるインタラクティブ選択にも対応。
+`build.sh` は Docker コンテナ内で west (Zephyr のビルドツール) を実行し、`.uf2` ファームウェアファイルを生成する。fzf によるインタラクティブ選択にも対応。
 
 ### 前提条件
 
@@ -19,7 +19,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 ### 基本的なビルド（最も頻繁に使うコマンド）
 
 ```bash
-./build.zsh keyboards/zmk-config-fish/build.yaml -p
+./build.sh keyboards/zmk-config-fish/build.yaml -p
 ```
 
 `-p` (pristine) は前回のビルドキャッシュをクリアしてクリーンビルドを行う。キーマップ変更後は基本的にこれを使う。
@@ -27,7 +27,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 ### 新しいキーボードの初回セットアップ
 
 ```bash
-./build.zsh --init keyboards/zmk-config-d3kb2/build.yaml
+./build.sh --init keyboards/zmk-config-d3kb2/build.yaml
 ```
 
 `--init` は以下を自動実行する:
@@ -39,7 +39,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 ### ZMK ソースの更新
 
 ```bash
-./build.zsh --update keyboards/zmk-config-fish/build.yaml
+./build.sh --update keyboards/zmk-config-fish/build.yaml
 ```
 
 `west.yml` のリビジョンを変更した後に使う。`west update` で依存関係を再取得してからビルドを実行する。
@@ -47,7 +47,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 ### インタラクティブ選択（fzf）
 
 ```bash
-./build.zsh
+./build.sh
 ```
 
 引数なしで実行すると fzf が起動し、`keyboards/*/build.yaml` から対象キーボードを選択できる。Tab で複数選択可能。右側にシールド名のプレビューが表示される。
@@ -55,21 +55,21 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 ### 複数キーボードの一括ビルド
 
 ```bash
-./build.zsh keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml -p
+./build.sh keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml -p
 ```
 
 ### ヘルプの表示
 
 ```bash
-./build.zsh --help
+./build.sh --help
 ```
 
 ## When to Use
 
-- キーマップや `.conf` を変更した後 → `./build.zsh <yaml> -p`
-- 新しいキーボード設定を追加した後 → `./build.zsh --init <yaml>`
-- `west.yml` の ZMK バージョンを更新した後 → `./build.zsh --update <yaml>`
-- どのキーボードをビルドするか迷ったとき → `./build.zsh` (fzf)
+- キーマップや `.conf` を変更した後 → `./build.sh <yaml> -p`
+- 新しいキーボード設定を追加した後 → `./build.sh --init <yaml>`
+- `west.yml` の ZMK バージョンを更新した後 → `./build.sh --update <yaml>`
+- どのキーボードをビルドするか迷ったとき → `./build.sh` (fzf)
 
 ## When NOT to Use
 
@@ -83,6 +83,7 @@ ZMK キーボードファームウェアをローカルでビルドしたい。�
 - `--init` は既存のワークスペースを完全に削除して再作成する（注意）
 - `build.yaml` の `artifact-name` フィールドで出力ファイル名をカスタマイズ可能
 - `cp -rT` (GNU coreutils) を使用しているため macOS では動作しない
+- bash と zsh の両方で動作する（bash 4+ 推奨）
 - 旧スクリプト `build.py` も残っている（Python + docker SDK + pyyaml が必要）
 
 ## References

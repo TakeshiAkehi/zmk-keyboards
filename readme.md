@@ -17,10 +17,10 @@ Ensure you have the following installed on your system:
 
 ```sh
 # Interactive selection (fzf) — just run with no arguments
-./build.zsh
+./build.sh
 
 # Specify a build.yaml directly
-./build.zsh keyboards/zmk-config-fish/build.yaml -p
+./build.sh keyboards/zmk-config-fish/build.yaml -p
 ```
 
 ### Options
@@ -36,26 +36,26 @@ Ensure you have the following installed on your system:
 
 ```sh
 # First-time setup for a new keyboard
-./build.zsh --init keyboards/zmk-config-d3kb2/build.yaml
+./build.sh --init keyboards/zmk-config-d3kb2/build.yaml
 
 # Rebuild after keymap change (most common)
-./build.zsh keyboards/zmk-config-fish/build.yaml -p
+./build.sh keyboards/zmk-config-fish/build.yaml -p
 
 # Update ZMK sources after editing west.yml
-./build.zsh --update keyboards/zmk-config-fish/build.yaml
+./build.sh --update keyboards/zmk-config-fish/build.yaml
 
 # Build multiple keyboards at once
-./build.zsh keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml -p
+./build.sh keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml -p
 
 # Interactive selection with fzf (Tab for multi-select)
-./build.zsh
+./build.sh
 ```
 
 ## Project Structure
 
 ```plaintext
 .
-├── build.zsh               # Main build script (zsh)
+├── build.sh                # Main build script (bash/zsh)
 ├── add_keyboard.bash       # Scaffold a new keyboard submodule
 ├── close_all_container.bash # Remove all build containers
 ├── keyboards/
