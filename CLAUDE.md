@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is a ZMK keyboard firmware build environment that enables local Docker-based builds for faster iteration compared to GitHub Actions. Keyboard configurations are stored as git submodules following the [unified-zmk-config-template](https://github.com/zmkfirmware/unified-zmk-config-template) structure.
+This is a ZMK keyboard firmware build environment that uses [`act`](https://github.com/nektos/act) to run GitHub Actions workflows locally for faster iteration compared to cloud CI. Keyboard configurations are stored as git submodules following the [unified-zmk-config-template](https://github.com/zmkfirmware/unified-zmk-config-template) structure.
 
 ## Build Commands
 
@@ -18,11 +18,11 @@ This is a ZMK keyboard firmware build environment that enables local Docker-base
 # Update ZMK sources after editing west.yml
 ./build.sh --update keyboards/<keyboard-name>/build.yaml
 
-# Build multiple keyboards at once
-./build.sh keyboards/zmk-config-fish/build.yaml keyboards/zmk-config-d3kb2/build.yaml -p
-
 # Interactive keyboard selection with fzf (no arguments)
 ./build.sh
+
+# Override container image
+ZMK_DOCKER_IMAGE=zmkfirmware/zmk-dev-arm:4.1 ./build.sh keyboards/<keyboard-name>/build.yaml -p
 ```
 
 Output `.uf2` files are placed in `zmk_work/<keyboard-name>/`.
@@ -45,18 +45,22 @@ zmk_modules/
     └── zephyr/module.yml    # Required — modules without this are ignored
 ```
 
-Modules are auto-detected and injected via `-DEXTRA_ZEPHYR_MODULES`. Existing Docker containers are recreated automatically when `zmk_modules/` is added. The directory is gitignored and mounted read-only in containers.
+Modules are auto-detected by the build workflow and injected via `-DEXTRA_ZEPHYR_MODULES`. The directory is gitignored and automatically available inside the `act` container via bind mount.
 
 ## Architecture
 
 ### Build Flow
 
 1. `build.sh` parses `build.yaml` for board/shield combinations (using `yq`)
-2. Docker container (`zmkfirmware/zmk-dev-arm:4.1`) is started with `zmk_work/<keyboard-name>/` mounted
-3. `west init -l config/` initializes the workspace (on `--init`)
-4. `west update` fetches ZMK and dependencies
-5. Local modules from `zmk_modules/` are detected and passed via `EXTRA_ZEPHYR_MODULES`
-6. `west build` compiles each shield, producing `.uf2` files
+2. Host-side: config and board files are copied to `zmk_work/<keyboard-name>/zmk/`
+3. For each build target, `act` runs `.github/workflows/build-local.yml` with `--bind`
+4. Inside the container (`zmkfirmware/zmk-build-arm:stable` by default):
+   - `west init -l config/` initializes the workspace (on `--init`)
+   - `west update` fetches ZMK and dependencies (on `--init` or `--update`)
+   - `west zephyr-export` prepares the build environment
+   - Local modules from `zmk_modules/` are auto-detected and passed via `EXTRA_ZEPHYR_MODULES`
+   - `west build` compiles the shield, producing a `.uf2` file
+5. Output `.uf2` is copied to `zmk_work/<keyboard-name>/`
 
 ### Keyboard Configuration Structure
 
@@ -84,16 +88,17 @@ include:
     snippet: zmk-usb-logging                  # Optional Zephyr snippet
 ```
 
-### Docker Container Lifecycle
+### act Container Lifecycle
 
-- Container name matches the keyboard config directory name
-- Containers are reused unless `--init` creates a fresh one
-- Containers are automatically recreated if `zmk_modules/` exists but is not mounted
-- `close_all_container.bash` can clean up all containers
+- Containers are ephemeral — created per `act` invocation and removed after completion
+- Workspace persistence comes from `act --bind`, which bind-mounts the repo root
+- `zmk_work/` directories persist on the host filesystem between builds
+- No container management needed (unlike the previous Docker-based approach)
 
 ## Prerequisites
 
-- Docker daemon running
+- Docker daemon running (used by `act` internally)
+- [`act`](https://github.com/nektos/act) — local GitHub Actions runner
 - [yq](https://github.com/mikefarah/yq) (Mike Farah version) — YAML parsing
 - [fzf](https://github.com/junegunn/fzf) — interactive keyboard selection (optional)
 - bash or zsh — build script runtime

@@ -11,3 +11,5 @@
 | ビルドスクリプトを Python から zsh に移行する | [20260207-adr-build-script-python-to-zsh-migration](docs/20260207-adr-build-script-python-to-zsh-migration.md) | ADR | build-script, zsh, fzf, docker-cli, python-migration | 2026-02-07 |
 | ビルドスクリプトの使い方 (build.sh) | [20260207-howto-how-to-use-build-script](docs/20260207-howto-how-to-use-build-script.md) | How-To | build-script, bash, zsh, docker, fzf, firmware | 2026-02-07 |
 | ローカルモジュールオーバーライド機構 | [20260207-design-local-module-override](docs/20260207-design-local-module-override.md) | Design | zmk, zephyr-modules, EXTRA_ZEPHYR_MODULES, docker-mount, local-development | 2026-02-07 |
+| ビルドシステムを Docker 直接管理から act ベースに移行する | [20260215-adr-build-system-docker-to-act-migration](docs/20260215-adr-build-system-docker-to-act-migration.md) | ADR | act, github-actions, docker, build-system, ci-local-parity | 2026-02-15 |
+| ZMK モジュール統合の二重メカニズム | [20260215-design-zmk-module-integration-dual-mechanism](docs/20260215-design-zmk-module-integration-dual-mechanism.md) | Design | zmk-modules, local-development, ci-integration, EXTRA_ZEPHYR_MODULES, board-root | 2026-02-15 |

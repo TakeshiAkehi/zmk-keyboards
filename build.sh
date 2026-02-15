@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly DOCKER_IMAGE="zmkfirmware/zmk-dev-arm:4.1"
+readonly DEFAULT_CONTAINER_IMAGE="zmkfirmware/zmk-build-arm:stable"
+readonly CONTAINER_IMAGE="${ZMK_DOCKER_IMAGE:-$DEFAULT_CONTAINER_IMAGE}"
 readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 readonly REPO_ROOT="$SCRIPT_DIR"
-readonly ZMK_MODULES_DIR="$REPO_ROOT/zmk_modules"
+readonly WORKFLOW_FILE=".github/workflows/build-local.yml"
 
 # ── State (set by parse_args / setup_paths) ──────────────────────────────────
 yaml_file=""
@@ -15,7 +16,7 @@ pristine_flag=false
 target_names=()
 
 # Per-keyboard paths (set by setup_paths)
-container_name=""
+keyboard_name=""
 confdir=""
 boardsdir=""
 workdir_top=""
@@ -30,7 +31,7 @@ error() { printf "[ERROR] %s\n" "$*" >&2; return 1; }
 
 check_dependencies() {
     local missing=false
-    for cmd in docker yq; do
+    for cmd in act yq; do
         if ! command -v "$cmd" &>/dev/null; then
             error "$cmd is required but not found"
             missing=true
@@ -41,6 +42,12 @@ check_dependencies() {
     fi
     $missing && exit 1
 
+    # act requires Docker
+    if ! docker info &>/dev/null 2>&1; then
+        error "docker daemon is required by act but not running"
+        exit 1
+    fi
+
     # Verify yq is Mike Farah's version (not the Python wrapper)
     if ! yq --version 2>&1 | grep -q 'mikefarah\|https://github.com/mikefarah'; then
         log "warning: yq may not be Mike Farah's version — YAML parsing may behave unexpectedly"
@@ -48,23 +55,32 @@ check_dependencies() {
     return 0
 }
 
-detect_local_modules() {
-    [[ ! -d "$ZMK_MODULES_DIR" ]] && return 0
-    local -a paths=()
-    local d
-    for d in "$ZMK_MODULES_DIR"/*/; do
-        [[ ! -d "$d" ]] && continue
-        if [[ -f "$d/zephyr/module.yml" ]]; then
-            # Remove trailing slash for clean path
-            d="${d%/}"
-            paths+=("$d")
-            log "  local module: ${d##*/}"
-        fi
-    done
-    if (( ${#paths[@]} > 0 )); then
-        local IFS=";"
-        printf '%s' "${paths[*]}"
-    fi
+# ── act Invocation ───────────────────────────────────────────────────────────
+act_run() {
+    local kb_name="$1" phase="$2"
+    local board="${3:-}" shield="${4:-}" snippet="${5:-}"
+    local cmake_args="${6:-}" artifact_name="${7:-}" pristine="${8:-false}"
+
+    local -a act_args=(
+        workflow_dispatch
+        -j build
+        -W "$WORKFLOW_FILE"
+        --bind
+        --pull=false
+        --input "keyboard_name=$kb_name"
+        --input "phase=$phase"
+        --input "container_image=$CONTAINER_IMAGE"
+    )
+
+    [[ -n "$board" ]]         && act_args+=(--input "board=$board")
+    [[ -n "$shield" ]]        && act_args+=(--input "shield=$shield")
+    [[ -n "$snippet" ]]       && act_args+=(--input "snippet=$snippet")
+    [[ -n "$cmake_args" ]]    && act_args+=(--input "cmake_args=$cmake_args")
+    [[ -n "$artifact_name" ]] && act_args+=(--input "artifact_name=$artifact_name")
+    [[ "$pristine" == true ]]  && act_args+=(--input "pristine=true")
+
+    log "act: phase=$phase kb=$kb_name${board:+ board=$board}${shield:+ shield=$shield}"
+    act "${act_args[@]}"
 }
 
 # ── Argument Parsing ─────────────────────────────────────────────────────────
@@ -72,7 +88,7 @@ show_help() {
     cat <<'HELP'
 Usage: build.sh [build.yaml [OPTIONS]]
 
-Build ZMK keyboard firmware using Docker containers.
+Build ZMK keyboard firmware using act (local GitHub Actions runner).
 
 With no arguments, launches an interactive fzf command builder that lets you
 select keyboards, targets, and flags — then generates and executes the commands.
@@ -80,11 +96,14 @@ select keyboards, targets, and flags — then generates and executes the command
 With a build.yaml argument, builds that single keyboard non-interactively.
 
 Options (with build.yaml):
-  --init              Create fresh workspace and container
+  --init              Create fresh workspace (west init + update)
   --update            Update ZMK sources (west update)
   -p, --pristine      Force pristine rebuild
   -t, --target NAME   Build only targets matching NAME (repeatable)
   -h, --help          Show this help
+
+Environment variables:
+  ZMK_DOCKER_IMAGE    Override the container image (default: zmkfirmware/zmk-build-arm:stable)
 
 Examples:
   build.sh                                              # interactive fzf builder
@@ -199,7 +218,7 @@ select_flags_interactive() {
     selection=$(printf '%s\n' \
         "(none)|No extra flags — build only" \
         "-p|Pristine rebuild (clean build directory)" \
-        "--init|Initialize fresh workspace and container" \
+        "--init|Initialize fresh workspace" \
         "--update|Update ZMK sources (west update)" \
     | fzf \
         --multi \
@@ -222,101 +241,15 @@ select_flags_interactive() {
     done | sed 's/ $//'
 }
 
-# ── Docker Container Management ──────────────────────────────────────────────
-container_ensure() {
-    local name="$1" mount="$2" force_new="${3:-false}" _recurse="${4:-false}"
-
-    # Pull image if missing
-    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -qF "$DOCKER_IMAGE"; then
-        log "pulling $DOCKER_IMAGE ..."
-        docker pull "$DOCKER_IMAGE"
-    fi
-
-    # Force new: remove existing
-    if [[ "$force_new" == true ]]; then
-        container_remove "$name"
-    fi
-
-    # Check current state
-    local state
-    state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null) || state="not_found"
-
-    case "$state" in
-        running|exited|created)
-            # Verify zmk_modules mount if the directory exists
-            if [[ "$_recurse" == false ]] && [[ -d "$ZMK_MODULES_DIR" ]]; then
-                local mounts
-                mounts=$(docker inspect --format '{{json .Mounts}}' "$name")
-                if ! echo "$mounts" | grep -q "$ZMK_MODULES_DIR"; then
-                    log "container missing zmk_modules mount — recreating"
-                    container_remove "$name"
-                    container_ensure "$name" "$mount" false true
-                    return $?
-                fi
-            fi
-            if [[ "$state" == "running" ]]; then
-                log "container already running: $name"
-            else
-                log "starting existing container: $name"
-                docker start "$name" >/dev/null
-                _wait_container_running "$name"
-            fi
-            ;;
-        not_found)
-            log "creating new container: $name"
-            local -a vol_args=("-v" "${mount}:${mount}")
-            if [[ -d "$ZMK_MODULES_DIR" ]]; then
-                vol_args+=("-v" "$ZMK_MODULES_DIR:$ZMK_MODULES_DIR:ro")
-            fi
-            docker run -d \
-                --name "$name" \
-                "${vol_args[@]}" \
-                -w "$mount" \
-                "$DOCKER_IMAGE" \
-                tail -F /dev/null >/dev/null
-            _wait_container_running "$name"
-            ;;
-        *)
-            error "unexpected container state: $state"
-            ;;
-    esac
-}
-
-_wait_container_running() {
-    local name="$1"
-    local tries=0
-    while [[ $(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null) != "running" ]]; do
-        sleep 1
-        (( tries++ )) || true
-        [[ $tries -ge 30 ]] && error "container $name did not start within 30s"
-    done
-}
-
-container_remove() {
-    local name="$1"
-    if docker inspect "$name" &>/dev/null; then
-        log "removing existing container: $name"
-        docker stop "$name" &>/dev/null || true
-        docker rm "$name" &>/dev/null || true
-    fi
-}
-
-docker_exec() {
-    local name="$1" wd="$2"
-    shift 2
-    log "executing: $*"
-    docker exec -w "$wd" "$name" sh -c "$*"
-}
-
 # ── Path Setup ───────────────────────────────────────────────────────────────
 setup_paths() {
     local yaml_file
     yaml_file="$(realpath "$1")"
 
-    container_name="$(basename "$(dirname "$yaml_file")")"
+    keyboard_name="$(basename "$(dirname "$yaml_file")")"
     confdir="$(dirname "$yaml_file")/config"
     boardsdir="$(dirname "$yaml_file")/boards"
-    workdir_top="$REPO_ROOT/zmk_work/$container_name"
+    workdir_top="$REPO_ROOT/zmk_work/$keyboard_name"
     workdir="$workdir_top/zmk"
     wconfdir="$workdir/config"
     wboardsdir="$wconfdir/boards"
@@ -443,24 +376,23 @@ interactive_build() {
 builder_init() {
     local yaml_file="$1"
     setup_paths "$yaml_file"
-    container_ensure "$container_name" "$workdir_top" true
 
     if [[ -d "$workdir" ]]; then
-        docker_exec "$container_name" "$workdir" "chmod 777 -R ."
         rm -rf "$workdir"
     fi
     mkdir -p "$workdir"
     cp -rT "$confdir" "$wconfdir"
-    docker_exec "$container_name" "$workdir" "west init -l $wconfdir"
+
+    act_run "$keyboard_name" "init"
 }
 
 builder_update() {
     local yaml_file="$1"
     setup_paths "$yaml_file"
-    container_ensure "$container_name" "$workdir_top" false
 
     cp -rT "$confdir" "$wconfdir"
-    docker_exec "$container_name" "$workdir" "west update"
+
+    act_run "$keyboard_name" "update"
 }
 
 builder_build() {
@@ -471,14 +403,8 @@ builder_build() {
         error "workspace not initialized: $workdir — run with --init first"
     fi
 
-    container_ensure "$container_name" "$workdir_top" false
-
     mkdir -p "$wbuilddir"
-    docker_exec "$container_name" "$workdir" "west zephyr-export"
     cp -rT "$boardsdir" "$wboardsdir"
-
-    local extra_modules
-    extra_modules=$(detect_local_modules)
 
     local targets
     targets=$(parse_build_yaml "$yaml_file")
@@ -513,41 +439,9 @@ builder_build() {
         [[ -n "$snippet" ]]    && log "  snippet = $snippet"
         [[ -n "$cmake_args" ]] && log "  cmake-args = $cmake_args"
 
-        build_target "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine" "$extra_modules"
+        act_run "$keyboard_name" "build" \
+            "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine"
     done
-}
-
-build_target() {
-    local board="$1" shield="$2" snippet="$3" cmake_args="$4" artifact_name="$5" pristine="$6" extra_modules="$7"
-    local appdir="$workdir/zmk/app"
-    local builddir="$wbuilddir/$shield"
-
-    # Construct west build command
-    local cmd="west build"
-    [[ "$pristine" == true ]] && cmd+=" -p"
-    cmd+=" -s $appdir -b $board -d $builddir"
-    [[ -n "$snippet" ]] && cmd+=" -S $snippet"
-    cmd+=" -- -DSHIELD=$shield -DZMK_CONFIG=$wconfdir"
-    if [[ -n "$extra_modules" ]]; then
-        cmd+=" '-DEXTRA_ZEPHYR_MODULES=$extra_modules'"
-    fi
-    [[ -n "$cmake_args" ]] && cmd+=" $cmake_args"
-
-    log "==build=="
-    log " workdir = $workdir"
-    log " cmd = $cmd"
-    docker_exec "$container_name" "$workdir" "$cmd"
-
-    # Fix permissions and copy .uf2 output
-    docker_exec "$container_name" "$builddir" "chmod 777 -R ."
-    local uf2="$builddir/zephyr/zmk.uf2"
-    if [[ -f "$uf2" ]]; then
-        local tgt_name="${artifact_name:-$shield}"
-        cp "$uf2" "$workdir_top/${tgt_name}.uf2"
-        log "copied: ${tgt_name}.uf2"
-    else
-        error "build failed — uf2 not found: $uf2"
-    fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

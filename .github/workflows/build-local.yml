@@ -1,0 +1,141 @@
+# Local build workflow for use with `act`.
+# Inlines the upstream ZMK build-user-config.yml logic, adapted for this
+# repository's directory layout (keyboard configs as submodules).
+#
+# Usage (via build.sh, or directly):
+#   act workflow_dispatch -j build \
+#     -W .github/workflows/build-local.yml --bind \
+#     --input keyboard_name=zmk-config-fish \
+#     --input phase=build \
+#     --input board=xiao_ble \
+#     --input shield=fish_left \
+#     --input pristine=true
+
+name: Local Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyboard_name:
+        description: "Keyboard config directory name (e.g., zmk-config-fish)"
+        required: true
+        type: string
+      board:
+        description: "Board name"
+        required: false
+        type: string
+        default: ""
+      shield:
+        description: "Shield name"
+        required: false
+        type: string
+        default: ""
+      snippet:
+        description: "Zephyr snippet"
+        required: false
+        type: string
+        default: ""
+      cmake_args:
+        description: "Extra cmake arguments"
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: "Output artifact name (defaults to shield)"
+        required: false
+        type: string
+        default: ""
+      phase:
+        description: "Build phase: init, update, build (combinable: init+update+build)"
+        required: true
+        type: string
+        default: "build"
+      pristine:
+        description: "Pristine build (true/false)"
+        required: false
+        type: string
+        default: "false"
+      container_image:
+        description: "Docker image for the build container"
+        required: false
+        type: string
+        default: "zmkfirmware/zmk-build-arm:stable"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.container_image }}
+    env:
+      WORK_TOP: ${{ github.workspace }}/zmk_work/${{ inputs.keyboard_name }}
+      WORKDIR: ${{ github.workspace }}/zmk_work/${{ inputs.keyboard_name }}/zmk
+      CONFDIR: ${{ github.workspace }}/zmk_work/${{ inputs.keyboard_name }}/zmk/config
+      BUILDDIR: ${{ github.workspace }}/zmk_work/${{ inputs.keyboard_name }}/zmk/build/${{ inputs.artifact_name != '' && inputs.artifact_name || inputs.shield }}
+      ZMK_MODULES_DIR: ${{ github.workspace }}/zmk_modules
+    steps:
+      - name: West Init
+        if: contains(inputs.phase, 'init')
+        working-directory: ${{ env.WORKDIR }}
+        run: west init -l "${{ env.CONFDIR }}"
+
+      - name: West Update
+        if: contains(inputs.phase, 'init') || contains(inputs.phase, 'update')
+        working-directory: ${{ env.WORKDIR }}
+        run: west update
+
+      - name: West Zephyr Export
+        if: contains(inputs.phase, 'build')
+        working-directory: ${{ env.WORKDIR }}
+        run: west zephyr-export
+
+      - name: Detect Local Modules
+        id: modules
+        if: contains(inputs.phase, 'build')
+        run: |
+          extra=""
+          if [ -d "${{ env.ZMK_MODULES_DIR }}" ]; then
+            for d in "${{ env.ZMK_MODULES_DIR }}"/*/; do
+              [ -d "$d" ] || continue
+              if [ -f "${d}zephyr/module.yml" ]; then
+                d="${d%/}"
+                extra="${extra:+${extra};}${d}"
+                echo "local module: ${d##*/}"
+              fi
+            done
+          fi
+          echo "extra_modules=${extra}" >> "$GITHUB_OUTPUT"
+
+      - name: West Build
+        if: contains(inputs.phase, 'build')
+        working-directory: ${{ env.WORKDIR }}
+        shell: sh -x {0}
+        run: |
+          west build \
+            ${{ inputs.pristine == 'true' && '-p' || '' }} \
+            -s zmk/app \
+            -b "${{ inputs.board }}" \
+            -d "${{ env.BUILDDIR }}" \
+            ${{ inputs.snippet != '' && format('-S {0}', inputs.snippet) || '' }} \
+            -- \
+            -DSHIELD="${{ inputs.shield }}" \
+            -DZMK_CONFIG="${{ env.CONFDIR }}" \
+            ${{ steps.modules.outputs.extra_modules != '' && format('"-DEXTRA_ZEPHYR_MODULES={0}"', steps.modules.outputs.extra_modules) || '' }} \
+            ${{ inputs.cmake_args }}
+
+      - name: Copy Artifact
+        if: contains(inputs.phase, 'build')
+        run: |
+          tgt="${{ inputs.artifact_name }}"
+          [ -z "$tgt" ] && tgt="${{ inputs.shield }}"
+          uf2="${{ env.BUILDDIR }}/zephyr/zmk.uf2"
+          if [ -f "$uf2" ]; then
+            cp "$uf2" "${{ env.WORK_TOP }}/${tgt}.uf2"
+            echo "copied: ${tgt}.uf2"
+          else
+            echo "::error::uf2 not found: $uf2"
+            exit 1
+          fi
+
+      - name: Fix Permissions
+        if: contains(inputs.phase, 'build')
+        run: chmod -R a+rw "${{ env.BUILDDIR }}"
