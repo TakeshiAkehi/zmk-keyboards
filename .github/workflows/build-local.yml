@@ -20,6 +20,10 @@ on:
         description: "Keyboard config directory name (e.g., zmk-config-fish)"
         required: true
         type: string
+      keyboard_config_dir:
+        description: "Absolute path to keyboard config directory (for module detection)"
+        required: true
+        type: string
       board:
         description: "Board name"
         required: false
@@ -93,6 +97,8 @@ jobs:
         if: contains(inputs.phase, 'build')
         run: |
           extra=""
+
+          # Detect modules from zmk_modules/ directory
           if [ -d "${{ env.ZMK_MODULES_DIR }}" ]; then
             for d in "${{ env.ZMK_MODULES_DIR }}"/*/; do
               [ -d "$d" ] || continue
@@ -103,6 +109,17 @@ jobs:
               fi
             done
           fi
+
+          # Check if keyboard config itself is a module (matches CI behavior)
+          kb_config_dir="${{ inputs.keyboard_config_dir }}"
+          if [ -f "${kb_config_dir}/zephyr/module.yml" ]; then
+            extra="${extra:+${extra};}${kb_config_dir}"
+            echo "keyboard config module: ${kb_config_dir##*/}"
+            echo "kb_is_module=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "kb_is_module=false" >> "$GITHUB_OUTPUT"
+          fi
+
           echo "extra_modules=${extra}" >> "$GITHUB_OUTPUT"
 
       - name: West Build
@@ -119,7 +136,8 @@ jobs:
             -- \
             -DSHIELD="${{ inputs.shield }}" \
             -DZMK_CONFIG="${{ env.CONFDIR }}" \
-            ${{ steps.modules.outputs.extra_modules != '' && format('"-DEXTRA_ZEPHYR_MODULES={0}"', steps.modules.outputs.extra_modules) || '' }} \
+            ${{ steps.modules.outputs.kb_is_module != 'true' && format('-DBOARD_ROOT="{0}" -DDTS_ROOT="{0}"', env.CONFDIR) || '' }} \
+            ${{ steps.modules.outputs.extra_modules != '' && format('"-DZMK_EXTRA_MODULES={0}"', steps.modules.outputs.extra_modules) || '' }} \
             ${{ inputs.cmake_args }}
 
       - name: Copy Artifact

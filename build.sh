@@ -17,6 +17,7 @@ target_names=()
 
 # Per-keyboard paths (set by setup_paths)
 keyboard_name=""
+keyboard_config_dir=""
 confdir=""
 boardsdir=""
 workdir_top=""
@@ -57,9 +58,9 @@ check_dependencies() {
 
 # ── act Invocation ───────────────────────────────────────────────────────────
 act_run() {
-    local kb_name="$1" phase="$2"
-    local board="${3:-}" shield="${4:-}" snippet="${5:-}"
-    local cmake_args="${6:-}" artifact_name="${7:-}" pristine="${8:-false}"
+    local kb_name="$1" phase="$2" kb_config_dir="$3"
+    local board="${4:-}" shield="${5:-}" snippet="${6:-}"
+    local cmake_args="${7:-}" artifact_name="${8:-}" pristine="${9:-false}"
 
     local -a act_args=(
         workflow_dispatch
@@ -68,6 +69,7 @@ act_run() {
         --bind
         --pull=false
         --input "keyboard_name=$kb_name"
+        --input "keyboard_config_dir=$kb_config_dir"
         --input "phase=$phase"
         --input "container_image=$CONTAINER_IMAGE"
     )
@@ -246,9 +248,10 @@ setup_paths() {
     local yaml_file
     yaml_file="$(realpath "$1")"
 
-    keyboard_name="$(basename "$(dirname "$yaml_file")")"
-    confdir="$(dirname "$yaml_file")/config"
-    boardsdir="$(dirname "$yaml_file")/boards"
+    keyboard_config_dir="$(dirname "$yaml_file")"
+    keyboard_name="$(basename "$keyboard_config_dir")"
+    confdir="$keyboard_config_dir/config"
+    boardsdir="$keyboard_config_dir/boards"
     workdir_top="$REPO_ROOT/zmk_work/$keyboard_name"
     workdir="$workdir_top/zmk"
     wconfdir="$workdir/config"
@@ -383,7 +386,7 @@ builder_init() {
     mkdir -p "$workdir"
     cp -rT "$confdir" "$wconfdir"
 
-    act_run "$keyboard_name" "init"
+    act_run "$keyboard_name" "init" "$keyboard_config_dir"
 }
 
 builder_update() {
@@ -392,7 +395,7 @@ builder_update() {
 
     cp -rT "$confdir" "$wconfdir"
 
-    act_run "$keyboard_name" "update"
+    act_run "$keyboard_name" "update" "$keyboard_config_dir"
 }
 
 builder_build() {
@@ -404,7 +407,12 @@ builder_build() {
     fi
 
     mkdir -p "$wbuilddir"
-    cp -rT "$boardsdir" "$wboardsdir"
+
+    # Only copy boards/ if keyboard config is not a Zephyr module
+    # (CI relies on module.yml's board_root instead)
+    if [[ ! -f "$keyboard_config_dir/zephyr/module.yml" ]]; then
+        cp -rT "$boardsdir" "$wboardsdir"
+    fi
 
     local targets
     targets=$(parse_build_yaml "$yaml_file")
@@ -439,7 +447,7 @@ builder_build() {
         [[ -n "$snippet" ]]    && log "  snippet = $snippet"
         [[ -n "$cmake_args" ]] && log "  cmake-args = $cmake_args"
 
-        act_run "$keyboard_name" "build" \
+        act_run "$keyboard_name" "build" "$keyboard_config_dir" \
             "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine"
     done
 }
