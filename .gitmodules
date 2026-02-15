@@ -13,3 +13,6 @@
 [submodule "keyboards/zmk-config-taiyaki"]
 	path = keyboards/zmk-config-taiyaki
 	url = git@github.com:TakeshiAkehi/zmk-config-taiyaki.git
+[submodule "keyboards/zmk-config-xiao-round-display"]
+	path = keyboards/zmk-config-xiao-round-display
+	url = git@github.com:TakeshiAkehi/zmk-config-xiao-round-display.git
