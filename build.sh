@@ -2,11 +2,10 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly DEFAULT_CONTAINER_IMAGE="zmkfirmware/zmk-build-arm:stable"
+readonly DEFAULT_CONTAINER_IMAGE="docker.io/zmkfirmware/zmk-build-arm:4.1"
 readonly CONTAINER_IMAGE="${ZMK_DOCKER_IMAGE:-$DEFAULT_CONTAINER_IMAGE}"
 readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 readonly REPO_ROOT="$SCRIPT_DIR"
-readonly WORKFLOW_FILE=".github/workflows/build-local.yml"
 
 # ── State (set by parse_args / setup_paths) ──────────────────────────────────
 yaml_file=""
@@ -32,7 +31,7 @@ error() { printf "[ERROR] %s\n" "$*" >&2; return 1; }
 
 check_dependencies() {
     local missing=false
-    for cmd in act yq; do
+    for cmd in docker yq; do
         if ! command -v "$cmd" &>/dev/null; then
             error "$cmd is required but not found"
             missing=true
@@ -43,9 +42,9 @@ check_dependencies() {
     fi
     $missing && exit 1
 
-    # act requires Docker
+    # Check Docker daemon
     if ! docker info &>/dev/null 2>&1; then
-        error "docker daemon is required by act but not running"
+        error "docker daemon is not running"
         exit 1
     fi
 
@@ -56,33 +55,46 @@ check_dependencies() {
     return 0
 }
 
-# ── act Invocation ───────────────────────────────────────────────────────────
-act_run() {
-    local kb_name="$1" phase="$2" kb_config_dir="$3"
-    local board="${4:-}" shield="${5:-}" snippet="${6:-}"
-    local cmake_args="${7:-}" artifact_name="${8:-}" pristine="${9:-false}"
+# ── Docker Invocation ────────────────────────────────────────────────────────
+docker_run() {
+    local script="$1"
+    docker run --rm \
+        -v "$REPO_ROOT:$REPO_ROOT" \
+        -w "$REPO_ROOT" \
+        "$CONTAINER_IMAGE" \
+        bash -c "$script"
+}
 
-    local -a act_args=(
-        workflow_dispatch
-        -j build
-        -W "$WORKFLOW_FILE"
-        --bind
-        --pull=false
-        --input "keyboard_name=$kb_name"
-        --input "keyboard_config_dir=$kb_config_dir"
-        --input "phase=$phase"
-        --input "container_image=$CONTAINER_IMAGE"
-    )
+# ── Module Detection ─────────────────────────────────────────────────────────
+# Detects local ZMK/Zephyr modules and sets:
+#   _extra_modules: semicolon-separated list of module paths
+#   _kb_is_module: true if keyboard config is itself a module
+detect_modules() {
+    local kb_config_dir="$1"
+    local zmk_modules_dir="$REPO_ROOT/zmk_modules"
+    local extra=""
 
-    [[ -n "$board" ]]         && act_args+=(--input "board=$board")
-    [[ -n "$shield" ]]        && act_args+=(--input "shield=$shield")
-    [[ -n "$snippet" ]]       && act_args+=(--input "snippet=$snippet")
-    [[ -n "$cmake_args" ]]    && act_args+=(--input "cmake_args=$cmake_args")
-    [[ -n "$artifact_name" ]] && act_args+=(--input "artifact_name=$artifact_name")
-    [[ "$pristine" == true ]]  && act_args+=(--input "pristine=true")
+    # Scan zmk_modules/ directory
+    if [[ -d "$zmk_modules_dir" ]]; then
+        for d in "$zmk_modules_dir"/*/; do
+            [[ -d "$d" ]] || continue
+            if [[ -f "${d}zephyr/module.yml" ]]; then
+                d="${d%/}"
+                extra="${extra:+${extra};}${d}"
+                log "  local module: ${d##*/}"
+            fi
+        done
+    fi
 
-    log "act: phase=$phase kb=$kb_name${board:+ board=$board}${shield:+ shield=$shield}"
-    act "${act_args[@]}"
+    # Check if keyboard config itself is a module
+    _kb_is_module=false
+    if [[ -f "${kb_config_dir}/zephyr/module.yml" ]]; then
+        extra="${extra:+${extra};}${kb_config_dir}"
+        log "  keyboard config module: ${kb_config_dir##*/}"
+        _kb_is_module=true
+    fi
+
+    _extra_modules="$extra"
 }
 
 # ── Argument Parsing ─────────────────────────────────────────────────────────
@@ -90,7 +102,7 @@ show_help() {
     cat <<'HELP'
 Usage: build.sh [build.yaml [OPTIONS]]
 
-Build ZMK keyboard firmware using act (local GitHub Actions runner).
+Build ZMK keyboard firmware using Docker containers.
 
 With no arguments, launches an interactive fzf command builder that lets you
 select keyboards, targets, and flags — then generates and executes the commands.
@@ -380,13 +392,12 @@ builder_init() {
     local yaml_file="$1"
     setup_paths "$yaml_file"
 
-    if [[ -d "$workdir" ]]; then
-        rm -rf "$workdir"
-    fi
+    [[ -d "$workdir" ]] && sudo rm -rf "$workdir"
     mkdir -p "$workdir"
     cp -rT "$confdir" "$wconfdir"
 
-    act_run "$keyboard_name" "init" "$keyboard_config_dir"
+    log "initializing workspace: $keyboard_name"
+    docker_run "cd '$workdir' && west init -l '$wconfdir'"
 }
 
 builder_update() {
@@ -395,7 +406,8 @@ builder_update() {
 
     cp -rT "$confdir" "$wconfdir"
 
-    act_run "$keyboard_name" "update" "$keyboard_config_dir"
+    log "updating workspace: $keyboard_name"
+    docker_run "cd '$workdir' && west update"
 }
 
 builder_build() {
@@ -406,11 +418,18 @@ builder_build() {
         error "workspace not initialized: $workdir — run with --init first"
     fi
 
+    log "syncing config files..."
+    cp -rT "$confdir" "$wconfdir"
+
     mkdir -p "$wbuilddir"
 
+    # Detect modules (sets _extra_modules and _kb_is_module)
+    log "detecting modules..."
+    detect_modules "$keyboard_config_dir"
+
     # Only copy boards/ if keyboard config is not a Zephyr module
-    # (CI relies on module.yml's board_root instead)
-    if [[ ! -f "$keyboard_config_dir/zephyr/module.yml" ]]; then
+    # (modules use board_root from module.yml instead)
+    if [[ "$_kb_is_module" == false ]]; then
         cp -rT "$boardsdir" "$wboardsdir"
     fi
 
@@ -442,14 +461,61 @@ builder_build() {
     fi
 
     log "parsing build targets from: $yaml_file"
-    echo "$targets" | while IFS='|' read -r board shield snippet cmake_args artifact_name; do
+
+    # Build a single shell script that contains all build commands
+    local script="set -e\ncd '$workdir'\nwest zephyr-export\n"
+
+    local target_count=0
+    while IFS='|' read -r board shield snippet cmake_args artifact_name; do
         log "building $board — $shield"
         [[ -n "$snippet" ]]    && log "  snippet = $snippet"
         [[ -n "$cmake_args" ]] && log "  cmake-args = $cmake_args"
 
-        act_run "$keyboard_name" "build" "$keyboard_config_dir" \
-            "$board" "$shield" "$snippet" "$cmake_args" "$artifact_name" "$pristine"
-    done
+        local output_name="${artifact_name:-$shield}"
+        local builddir="$wbuilddir/${output_name}"
+
+        # Construct CMake arguments matching build-local.yml logic
+        local west_args="-s zmk/app -b '$board' -d '$builddir'"
+        [[ "$pristine" == true ]] && west_args="-p $west_args"
+
+        local cmake_flags="-DSHIELD='$shield' -DZMK_CONFIG='$wconfdir'"
+
+        # Add BOARD_ROOT and DTS_ROOT only if keyboard is NOT a module
+        if [[ "$_kb_is_module" == false ]]; then
+            cmake_flags+=" -DBOARD_ROOT='$wconfdir' -DDTS_ROOT='$wconfdir'"
+        fi
+
+        # Add extra modules if detected
+        if [[ -n "$_extra_modules" ]]; then
+            cmake_flags+=" -DZMK_EXTRA_MODULES='$_extra_modules'"
+        fi
+
+        # Add snippet if specified
+        if [[ -n "$snippet" ]]; then
+            west_args+=" -S '$snippet'"
+        fi
+
+        # Add user cmake-args from build.yaml
+        if [[ -n "$cmake_args" ]]; then
+            cmake_flags+=" $cmake_args"
+        fi
+
+        # Append build command to script
+        script+="echo '=== Building ${output_name} ==='\n"
+        script+="west build $west_args -- $cmake_flags\n"
+        script+="cp '$builddir/zephyr/zmk.uf2' '$workdir_top/${output_name}.uf2'\n"
+        script+="chmod -R a+rw '$builddir'\n"
+
+        target_count=$((target_count + 1))
+    done <<< "$targets"
+
+    if [[ $target_count -eq 0 ]]; then
+        log "no targets to build"
+        return 0
+    fi
+
+    log "executing batched build ($target_count target(s)) in container..."
+    docker_run "$(printf '%b' "$script")"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
