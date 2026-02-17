@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-readonly DEFAULT_CONTAINER_IMAGE="docker.io/zmkfirmware/zmk-build-arm:4.1"
+readonly DEFAULT_CONTAINER_IMAGE="docker.io/zmkfirmware/zmk-build-arm:stable"
+# readonly DEFAULT_CONTAINER_IMAGE="docker.io/zmkfirmware/zmk-build-arm:4.1"
 readonly CONTAINER_IMAGE="${ZMK_DOCKER_IMAGE:-$DEFAULT_CONTAINER_IMAGE}"
 readonly SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 readonly REPO_ROOT="$SCRIPT_DIR"
@@ -12,6 +13,7 @@ yaml_file=""
 init_flag=false
 update_flag=false
 pristine_flag=false
+shell_flag=false
 target_names=()
 
 # Per-keyboard paths (set by setup_paths)
@@ -74,17 +76,17 @@ detect_modules() {
     local zmk_modules_dir="$REPO_ROOT/zmk_modules"
     local extra=""
 
-    # Scan zmk_modules/ directory
-    if [[ -d "$zmk_modules_dir" ]]; then
-        for d in "$zmk_modules_dir"/*/; do
-            [[ -d "$d" ]] || continue
-            if [[ -f "${d}zephyr/module.yml" ]]; then
-                d="${d%/}"
-                extra="${extra:+${extra};}${d}"
-                log "  local module: ${d##*/}"
-            fi
-        done
-    fi
+    # Scan zmk_modules/ directory (DISABLED)
+    # if [[ -d "$zmk_modules_dir" ]]; then
+    #     for d in "$zmk_modules_dir"/*/; do
+    #         [[ -d "$d" ]] || continue
+    #         if [[ -f "${d}zephyr/module.yml" ]]; then
+    #             d="${d%/}"
+    #             extra="${extra:+${extra};}${d}"
+    #             log "  local module: ${d##*/}"
+    #         fi
+    #     done
+    # fi
 
     # Check if keyboard config itself is a module
     _kb_is_module=false
@@ -113,6 +115,7 @@ Options (with build.yaml):
   --init              Create fresh workspace (west init + update)
   --update            Update ZMK sources (west update)
   -p, --pristine      Force pristine rebuild
+  --shell             Launch interactive shell in container instead of building
   -t, --target NAME   Build only targets matching NAME (repeatable)
   -h, --help          Show this help
 
@@ -133,6 +136,7 @@ parse_args() {
             --init)        init_flag=true ;;
             --update)      update_flag=true ;;
             -p|--pristine) pristine_flag=true ;;
+            --shell)       shell_flag=true ;;
             -t|--target)   shift; target_names+=("$1") ;;
             -h|--help)     show_help; exit 0 ;;
             -*)            error "unknown option: $1" ;;
@@ -219,8 +223,10 @@ select_targets_interactive() {
         return 0
     fi
 
-    # Return space-separated names
-    printf '%s ' "${selected_labels[@]}" | sed 's/ $//'
+    # Return semicolon-separated names (supports labels that contain spaces, e.g. merged-shield builds)
+    local joined
+    printf -v joined '%s;' "${selected_labels[@]}"
+    printf '%s' "${joined%;}"
 }
 
 # Select build flags via fzf.
@@ -234,6 +240,7 @@ select_flags_interactive() {
         "-p|Pristine rebuild (clean build directory)" \
         "--init|Initialize fresh workspace" \
         "--update|Update ZMK sources (west update)" \
+        "--shell|Launch interactive shell instead of building" \
     | fzf \
         --multi \
         --header="── $keyboard_name ──" \
@@ -330,8 +337,9 @@ interactive_build() {
         local cmd="./build.sh $rel"
         [[ -n "$flags" ]] && cmd+=" $flags"
         if [[ -n "$target_filter" ]]; then
-            for t in $target_filter; do
-                cmd+=" -t $t"
+            IFS=';' read -ra _ts <<< "$target_filter"
+            for t in "${_ts[@]}"; do
+                cmd+=" -t $(printf '%q' "$t")"
             done
         fi
         replay_parts+=("$cmd")
@@ -371,19 +379,20 @@ interactive_build() {
         IFS='|' read -r f target_filter flags <<< "$spec"
 
         # Parse flags for this keyboard
-        local spec_init=false spec_update=false spec_pristine=false
+        local spec_init=false spec_update=false spec_pristine=false spec_shell=false
         for flag in $flags; do
             case "$flag" in
                 --init)        spec_init=true ;;
                 --update)      spec_update=true ;;
                 -p|--pristine) spec_pristine=true ;;
+                --shell)       spec_shell=true ;;
             esac
         done
 
         log "━━━ processing: $f ━━━"
         [[ "$spec_init" == true ]]                                && builder_init "$f"
         [[ "$spec_update" == true || "$spec_init" == true ]]      && builder_update "$f"
-        builder_build "$f" "$spec_pristine" "$target_filter"
+        builder_build "$f" "$spec_pristine" "$target_filter" "$spec_shell"
     done
 }
 
@@ -411,7 +420,7 @@ builder_update() {
 }
 
 builder_build() {
-    local yaml_file="$1" pristine="$2" target_filter="${3:-}"
+    local yaml_file="$1" pristine="$2" target_filter="${3:-}" shell_mode="${4:-$shell_flag}"
     setup_paths "$yaml_file"
 
     if [[ ! -d "$workdir/.west" ]]; then
@@ -439,7 +448,7 @@ builder_build() {
     # Filter by target names if specified (from -t flags or interactive selection)
     local -a filter_names=()
     if [[ -n "$target_filter" ]]; then
-        read -ra filter_names <<< "$target_filter"
+        IFS=';' read -ra filter_names <<< "$target_filter"
     elif [[ ${#target_names[@]} -gt 0 ]]; then
         filter_names=("${target_names[@]}")
     fi
@@ -472,7 +481,7 @@ builder_build() {
         [[ -n "$cmake_args" ]] && log "  cmake-args = $cmake_args"
 
         local output_name="${artifact_name:-$shield}"
-        local builddir="$wbuilddir/${output_name}"
+        local builddir="$wbuilddir/${output_name// /_}"
 
         # Construct CMake arguments matching build-local.yml logic
         local west_args="-s zmk/app -b '$board' -d '$builddir'"
@@ -514,8 +523,34 @@ builder_build() {
         return 0
     fi
 
-    log "executing batched build ($target_count target(s)) in container..."
-    docker_run "$(printf '%b' "$script")"
+    if [[ "$shell_mode" == true ]]; then
+        # Save build commands to file so user can inspect/run them manually
+        local script_path="$wbuilddir/.build_commands.sh"
+        printf '%b' "$script" > "$script_path"
+        chmod +x "$script_path"
+
+        # Create init file: sets up environment and shows instructions
+        local init_path="$wbuilddir/.shell_init.sh"
+        cat > "$init_path" <<INIT
+cd '$workdir'
+west zephyr-export
+echo ""
+echo "Build commands saved to: $script_path"
+echo "Run 'source $script_path' to execute the full build, or run commands manually."
+echo ""
+PS1='[$keyboard_name] \w \$ '
+INIT
+
+        log "launching interactive shell in container (exit to return)..."
+        docker run --rm -it \
+            -v "$REPO_ROOT:$REPO_ROOT" \
+            -w "$workdir" \
+            "$CONTAINER_IMAGE" \
+            bash --init-file "$init_path"
+    else
+        log "executing batched build ($target_count target(s)) in container..."
+        docker_run "$(printf '%b' "$script")"
+    fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
