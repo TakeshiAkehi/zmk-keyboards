@@ -15,6 +15,7 @@ update_flag=false
 pristine_flag=false
 shell_flag=false
 target_names=()
+extra_module_paths=()
 
 # Per-keyboard paths (set by setup_paths)
 keyboard_name=""
@@ -117,6 +118,7 @@ Options (with build.yaml):
   -p, --pristine      Force pristine rebuild
   --shell             Launch interactive shell in container instead of building
   -t, --target NAME   Build only targets matching NAME (repeatable)
+  --extra PATH        Inject a local ZMK module from zmk_modules/ (repeatable)
   -h, --help          Show this help
 
 Environment variables:
@@ -138,6 +140,7 @@ parse_args() {
             -p|--pristine) pristine_flag=true ;;
             --shell)       shell_flag=true ;;
             -t|--target)   shift; target_names+=("$1") ;;
+            --extra)       shift; extra_module_paths+=("$1") ;;
             -h|--help)     show_help; exit 0 ;;
             -*)            error "unknown option: $1" ;;
             *)
@@ -241,6 +244,7 @@ select_flags_interactive() {
         "--init|Initialize fresh workspace" \
         "--update|Update ZMK sources (west update)" \
         "--shell|Launch interactive shell instead of building" \
+        "--extra|Inject local modules from zmk_modules/" \
     | fzf \
         --multi \
         --header="── $keyboard_name ──" \
@@ -260,6 +264,43 @@ select_flags_interactive() {
         [[ "$flag" == "(none)" ]] && continue
         printf '%s ' "$flag"
     done | sed 's/ $//'
+}
+
+# Select modules from zmk_modules/ via fzf.
+# Prints one absolute path per line for each selected module.
+select_extra_modules_interactive() {
+    local zmk_modules_dir="$REPO_ROOT/zmk_modules"
+
+    if [[ ! -d "$zmk_modules_dir" ]]; then
+        log "warning: zmk_modules/ not found — no modules available"
+        return 0
+    fi
+
+    local -a candidates=()
+    for d in "$zmk_modules_dir"/*/; do
+        [[ -d "$d" && -f "${d}zephyr/module.yml" ]] || continue
+        candidates+=("${d%/}")
+    done
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        log "warning: no valid modules in zmk_modules/ (each needs zephyr/module.yml)"
+        return 0
+    fi
+
+    local fzf_exit=0
+    local result
+    result=$(printf '%s\n' "${candidates[@]}" | fzf \
+        --multi \
+        --bind 'start:select-all' \
+        --prompt="Select module(s)> " \
+        --delimiter='/' \
+        --with-nth=-1 \
+        --preview 'cat {}/zephyr/module.yml 2>/dev/null || echo "(no module.yml)"' \
+        --preview-window=right:40% \
+    ) || fzf_exit=$?
+
+    [[ $fzf_exit -ne 0 ]] && return 130
+    printf '%s\n' "$result"
 }
 
 # ── Path Setup ───────────────────────────────────────────────────────────────
@@ -320,19 +361,39 @@ interactive_build() {
         fi
 
         # Select flags
-        local flags
-        if ! flags=$(select_flags_interactive "$kb_name"); then
+        local raw_flags
+        if ! raw_flags=$(select_flags_interactive "$kb_name"); then
             log "cancelled"
             exit 0
         fi
 
-        specs+=("${f}|${target_filter}|${flags}")
+        # If --extra was selected, strip it from flags and invoke module picker
+        local flags="" has_extra=false
+        for flag in $raw_flags; do
+            if [[ "$flag" == "--extra" ]]; then
+                has_extra=true
+            else
+                flags="${flags:+$flags }$flag"
+            fi
+        done
+
+        local modules=""
+        if [[ "$has_extra" == true ]]; then
+            local selected_modules
+            if ! selected_modules=$(select_extra_modules_interactive); then
+                log "cancelled"
+                exit 0
+            fi
+            modules="$selected_modules"
+        fi
+
+        specs+=("${f}|${target_filter}|${flags}|${modules}")
     done
 
     # Build replay command(s)
     local -a replay_parts=()
     for spec in "${specs[@]}"; do
-        IFS='|' read -r f target_filter flags <<< "$spec"
+        IFS='|' read -r f target_filter flags modules <<< "$spec"
         local rel="${f#"$REPO_ROOT"/}"
         local cmd="./build.sh $rel"
         [[ -n "$flags" ]] && cmd+=" $flags"
@@ -341,6 +402,11 @@ interactive_build() {
             for t in "${_ts[@]}"; do
                 cmd+=" -t $(printf '%q' "$t")"
             done
+        fi
+        if [[ -n "$modules" ]]; then
+            while IFS= read -r mod; do
+                [[ -n "$mod" ]] && cmd+=" --extra $(printf '%q' "$mod")"
+            done <<< "$modules"
         fi
         replay_parts+=("$cmd")
     done
@@ -376,7 +442,7 @@ interactive_build() {
 
     # Execute each spec
     for spec in "${specs[@]}"; do
-        IFS='|' read -r f target_filter flags <<< "$spec"
+        IFS='|' read -r f target_filter flags modules <<< "$spec"
 
         # Parse flags for this keyboard
         local spec_init=false spec_update=false spec_pristine=false spec_shell=false
@@ -389,10 +455,16 @@ interactive_build() {
             esac
         done
 
+        # Collect per-spec extra modules into an array
+        local -a spec_extra_modules=()
+        if [[ -n "$modules" ]]; then
+            mapfile -t spec_extra_modules <<< "$modules"
+        fi
+
         log "━━━ processing: $f ━━━"
         [[ "$spec_init" == true ]]                                && builder_init "$f"
         [[ "$spec_update" == true || "$spec_init" == true ]]      && builder_update "$f"
-        builder_build "$f" "$spec_pristine" "$target_filter" "$spec_shell"
+        builder_build "$f" "$spec_pristine" "$target_filter" "$spec_shell" "${spec_extra_modules[@]+"${spec_extra_modules[@]}"}"
     done
 }
 
@@ -421,6 +493,8 @@ builder_update() {
 
 builder_build() {
     local yaml_file="$1" pristine="$2" target_filter="${3:-}" shell_mode="${4:-$shell_flag}"
+    shift 4
+    local -a _extra_modules_arg=("$@")
     setup_paths "$yaml_file"
 
     if [[ ! -d "$workdir/.west" ]]; then
@@ -435,6 +509,14 @@ builder_build() {
     # Detect modules (sets _extra_modules and _kb_is_module)
     log "detecting modules..."
     detect_modules "$keyboard_config_dir"
+
+    # Merge extra modules from CLI (--extra) and interactive selection
+    local _all_extra=("${_extra_modules_arg[@]+"${_extra_modules_arg[@]}"}" "${extra_module_paths[@]+"${extra_module_paths[@]}"}")
+    for mod in "${_all_extra[@]+"${_all_extra[@]}"}"; do
+        [[ -n "$mod" ]] || continue
+        _extra_modules="${_extra_modules:+${_extra_modules};}${mod}"
+        log "  extra module: ${mod##*/}"
+    done
 
     # Only copy boards/ if keyboard config is not a Zephyr module
     # (modules use board_root from module.yml instead)
@@ -564,7 +646,7 @@ main() {
         log "━━━ processing: $yaml_file ━━━"
         [[ "$init_flag" == true ]]                              && builder_init "$yaml_file"
         [[ "$update_flag" == true || "$init_flag" == true ]]    && builder_update "$yaml_file"
-        builder_build "$yaml_file" "$pristine_flag"
+        builder_build "$yaml_file" "$pristine_flag" "" "$shell_flag" "${extra_module_paths[@]+"${extra_module_paths[@]}"}"
     fi
 
     log "done"
