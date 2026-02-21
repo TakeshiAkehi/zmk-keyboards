@@ -14,6 +14,7 @@ init_flag=false
 update_flag=false
 pristine_flag=false
 shell_flag=false
+menuconfig_flag=false
 target_names=()
 extra_module_paths=()
 
@@ -117,6 +118,7 @@ Options (with build.yaml):
   --update            Update ZMK sources (west update)
   -p, --pristine      Force pristine rebuild
   --shell             Launch interactive shell in container instead of building
+  --menuconfig        Launch Kconfig menuconfig in interactive container
   -t, --target NAME   Build only targets matching NAME (repeatable)
   --extra PATH        Inject a local ZMK module from zmk_modules/ (repeatable)
   -h, --help          Show this help
@@ -139,6 +141,7 @@ parse_args() {
             --update)      update_flag=true ;;
             -p|--pristine) pristine_flag=true ;;
             --shell)       shell_flag=true ;;
+            --menuconfig)  menuconfig_flag=true ;;
             -t|--target)   shift; target_names+=("$1") ;;
             --extra)       shift; extra_module_paths+=("$1") ;;
             -h|--help)     show_help; exit 0 ;;
@@ -244,6 +247,7 @@ select_flags_interactive() {
         "--init|Initialize fresh workspace" \
         "--update|Update ZMK sources (west update)" \
         "--shell|Launch interactive shell instead of building" \
+        "--menuconfig|Launch Kconfig menuconfig in interactive container" \
         "--extra|Inject local modules from zmk_modules/" \
     | fzf \
         --multi \
@@ -445,13 +449,14 @@ interactive_build() {
         IFS='|' read -r f target_filter flags modules <<< "$spec"
 
         # Parse flags for this keyboard
-        local spec_init=false spec_update=false spec_pristine=false spec_shell=false
+        local spec_init=false spec_update=false spec_pristine=false spec_shell=false spec_menuconfig=false
         for flag in $flags; do
             case "$flag" in
                 --init)        spec_init=true ;;
                 --update)      spec_update=true ;;
                 -p|--pristine) spec_pristine=true ;;
                 --shell)       spec_shell=true ;;
+                --menuconfig)  spec_menuconfig=true ;;
             esac
         done
 
@@ -464,7 +469,7 @@ interactive_build() {
         log "━━━ processing: $f ━━━"
         [[ "$spec_init" == true ]]                                && builder_init "$f"
         [[ "$spec_update" == true || "$spec_init" == true ]]      && builder_update "$f"
-        builder_build "$f" "$spec_pristine" "$target_filter" "$spec_shell" "${spec_extra_modules[@]+"${spec_extra_modules[@]}"}"
+        builder_build "$f" "$spec_pristine" "$target_filter" "$spec_shell" "$spec_menuconfig" "${spec_extra_modules[@]+"${spec_extra_modules[@]}"}"
     done
 }
 
@@ -492,8 +497,8 @@ builder_update() {
 }
 
 builder_build() {
-    local yaml_file="$1" pristine="$2" target_filter="${3:-}" shell_mode="${4:-$shell_flag}"
-    shift 4
+    local yaml_file="$1" pristine="$2" target_filter="${3:-}" shell_mode="${4:-$shell_flag}" menuconfig_mode="${5:-$menuconfig_flag}"
+    shift 5
     local -a _extra_modules_arg=("$@")
     setup_paths "$yaml_file"
 
@@ -555,6 +560,7 @@ builder_build() {
 
     # Build a single shell script that contains all build commands
     local script="set -e\ncd '$workdir'\nwest zephyr-export\n"
+    local menuconfig_cmd=""
 
     local target_count=0
     while IFS='|' read -r board shield snippet cmake_args artifact_name; do
@@ -591,13 +597,19 @@ builder_build() {
             cmake_flags+=" $cmake_args"
         fi
 
-        # Append build command to script
-        script+="echo '=== Building ${output_name} ==='\n"
-        script+="west build $west_args -- $cmake_flags\n"
-        script+="cp '$builddir/zephyr/zmk.uf2' '$workdir_top/${output_name}.uf2'\n"
-        script+="chmod -R a+rw '$builddir'\n"
+        if [[ "$menuconfig_mode" == true ]]; then
+            # Capture only the first target for menuconfig
+            menuconfig_cmd="cd '$workdir' && west zephyr-export && west build $west_args -t menuconfig -- $cmake_flags"
+        else
+            # Append build command to script
+            script+="echo '=== Building ${output_name} ==='\n"
+            script+="west build $west_args -- $cmake_flags\n"
+            script+="cp '$builddir/zephyr/zmk.uf2' '$workdir_top/${output_name}.uf2'\n"
+            script+="chmod -R a+rw '$builddir'\n"
+        fi
 
         target_count=$((target_count + 1))
+        [[ "$menuconfig_mode" == true ]] && break
     done <<< "$targets"
 
     if [[ $target_count -eq 0 ]]; then
@@ -605,7 +617,14 @@ builder_build() {
         return 0
     fi
 
-    if [[ "$shell_mode" == true ]]; then
+    if [[ "$menuconfig_mode" == true ]]; then
+        log "launching menuconfig in interactive container..."
+        docker run --rm -it \
+            -v "$REPO_ROOT:$REPO_ROOT" \
+            -w "$workdir" \
+            "$CONTAINER_IMAGE" \
+            bash -c "$menuconfig_cmd"
+    elif [[ "$shell_mode" == true ]]; then
         # Save build commands to file so user can inspect/run them manually
         local script_path="$wbuilddir/.build_commands.sh"
         printf '%b' "$script" > "$script_path"
@@ -646,7 +665,7 @@ main() {
         log "━━━ processing: $yaml_file ━━━"
         [[ "$init_flag" == true ]]                              && builder_init "$yaml_file"
         [[ "$update_flag" == true || "$init_flag" == true ]]    && builder_update "$yaml_file"
-        builder_build "$yaml_file" "$pristine_flag" "" "$shell_flag" "${extra_module_paths[@]+"${extra_module_paths[@]}"}"
+        builder_build "$yaml_file" "$pristine_flag" "" "$shell_flag" "$menuconfig_flag" "${extra_module_paths[@]+"${extra_module_paths[@]}"}"
     fi
 
     log "done"
