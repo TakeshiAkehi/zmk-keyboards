@@ -63,6 +63,7 @@ check_dependencies() {
 docker_run() {
     local script="$1"
     docker run --rm \
+        --user "$(id -u):$(id -g)" \
         -v "$REPO_ROOT:$REPO_ROOT" \
         -w "$REPO_ROOT" \
         "$CONTAINER_IMAGE" \
@@ -478,7 +479,7 @@ builder_init() {
     local yaml_file="$1"
     setup_paths "$yaml_file"
 
-    [[ -d "$workdir" ]] && sudo rm -rf "$workdir"
+    [[ -d "$workdir" ]] && rm -rf "$workdir"
     mkdir -p "$workdir"
     cp -rT "$confdir" "$wconfdir"
 
@@ -605,7 +606,6 @@ builder_build() {
             script+="echo '=== Building ${output_name} ==='\n"
             script+="west build $west_args -- $cmake_flags\n"
             script+="cp '$builddir/zephyr/zmk.uf2' '$workdir_top/${output_name}.uf2'\n"
-            script+="chmod -R a+rw '$builddir'\n"
         fi
 
         target_count=$((target_count + 1))
@@ -620,6 +620,7 @@ builder_build() {
     if [[ "$menuconfig_mode" == true ]]; then
         log "launching menuconfig in interactive container..."
         docker run --rm -it \
+            --user "$(id -u):$(id -g)" \
             -v "$REPO_ROOT:$REPO_ROOT" \
             -w "$workdir" \
             "$CONTAINER_IMAGE" \
@@ -644,6 +645,7 @@ INIT
 
         log "launching interactive shell in container (exit to return)..."
         docker run --rm -it \
+            --user "$(id -u):$(id -g)" \
             -v "$REPO_ROOT:$REPO_ROOT" \
             -w "$workdir" \
             "$CONTAINER_IMAGE" \

@@ -1,146 +1,136 @@
-# xiaord ディスプレイサポート実装計画
+# vmouse仮想入力デバイス + status_screen.c入力処理
 
-参考: [prospector-zmk-module](https://github.com/carrefinho/prospector-zmk-module)
+## Context
+
+`virtual_buttons.c` が `input_report_key(NULL, ...)` で送出するイベントは、`zmk,input-listener` に届かない（`INPUT_CALLBACK_DEFINE` のデバイスフィルタにより）。DT-backed仮想デバイスを作成し、そのデバイスポインタ経由でイベントを送出することで、ZMKのinput pipelineに統合する。
+
+標準chsc6xドライバ（ABS + BTN_TOUCHのみ出力）を使用する想定。ABS→REL変換、タップ検知、inertial cursorはstatus_screen.c側で実装する。
+
+## Phase 0: chsc6xレポートレート計測
+
+カスタムドライバのGPIO割り込み間隔を実測し、LVGLのtick(10ms=100Hz)で中間点ロストが発生するか確認する。
+
+### 変更: `input_chsc6x_custom.c` の `chsc6x_custom_process()` に追加
+
+```c
+// ファイル先頭付近に追加
+static uint32_t s_last_report_time;
+static uint32_t s_report_count;
+static uint32_t s_min_interval = UINT32_MAX;
+static uint32_t s_max_interval;
+static uint64_t s_sum_interval;
+
+// chsc6x_custom_process() の冒頭に追加
+uint32_t now = k_uptime_get_32();
+if (s_last_report_time > 0) {
+    uint32_t interval = now - s_last_report_time;
+    if (interval < s_min_interval) s_min_interval = interval;
+    if (interval > s_max_interval) s_max_interval = interval;
+    s_sum_interval += interval;
+}
+s_last_report_time = now;
+s_report_count++;
+
+// 100回ごとにログ出力
+if (s_report_count % 100 == 0 && s_report_count > 0) {
+    LOG_INF("Report rate: count=%u avg=%ums min=%ums max=%ums",
+            s_report_count,
+            (uint32_t)(s_sum_interval / (s_report_count - 1)),
+            s_min_interval, s_max_interval);
+}
+```
+
+### 確認方法
+1. ビルド: `./build.sh keyboards/zmk-config-genfish/build.yaml -p`
+2. フラッシュして指でタッチパッドをドラッグ
+3. USB loggingまたはRTTでログを確認
+4. 平均間隔が10ms以上（≤100Hz）なら中間点ロストなし
 
 ---
 
-## ディスプレイサポートの全体像
+## Phase 1: vmouse仮想デバイス + 入力処理（Phase 0検証後）
 
-### ハードウェア比較
+## 実装
 
-| | Prospector | xiaord (Seeed XIAO Round) |
-|---|---|---|
-| ディスプレイコントローラ | ST7789V | GC9X01X (GC9A01) |
-| インターフェース | SPI | SPI |
-| 解像度 | 240×320 | 240×240 (円形) |
-| タッチ | なし | CHSC6X (I2C) |
+### 1. DT binding: `dts/bindings/zmk,virtual-input.yaml`（新規）
 
-### ZMK ディスプレイスタック（必要な層）
-
-```
-┌─────────────────────────────────────┐
-│  Custom Status Screen (LVGL widgets)│  ← 任意：独自UI
-├─────────────────────────────────────┤
-│  ZMK Display subsystem              │  ← CONFIG_ZMK_DISPLAY=y
-├─────────────────────────────────────┤
-│  LVGL                               │  ← lvgl dep (module.yml 既存)
-├─────────────────────────────────────┤
-│  Display driver (GC9X01X)           │  ← seeed_xiao_round_display が提供
-├─────────────────────────────────────┤
-│  SPI / GPIO                         │  ← ハードウェア
-└─────────────────────────────────────┘
+```yaml
+description: Virtual input device for emitting events from software
+compatible: "zmk,virtual-input"
 ```
 
----
+### 2. ドライバ: `drivers/input/vmouse_shim.c`（新規）
 
-## 必要な変更（xiaord モジュール）
+最小限のデバイスインスタンス定義のみ。ラッパー関数不要（Zephyr APIを直接使用）。
 
-### 1. `xiaord.overlay` への追加
+```c
+#include <zephyr/device.h>
+#define DT_DRV_COMPAT zmk_virtual_input
 
-```devicetree
-/ {
-    chosen {
-        zephyr,display = &gc9x01x;  // seeed_xiao_round_display が定義するノード名
-    };
+static int vmouse_init(const struct device *dev) { return 0; }
+
+#define VMOUSE_INST(n) \
+    DEVICE_DT_INST_DEFINE(n, vmouse_init, NULL, \
+                          NULL, NULL, \
+                          POST_KERNEL, CONFIG_INPUT_INIT_PRIORITY, NULL);
+
+DT_INST_FOREACH_STATUS_OKAY(VMOUSE_INST)
+```
+
+### 3. ビルド設定
+
+**`drivers/input/Kconfig`** に追加:
+```
+config ZMK_VIRTUAL_INPUT
+    bool "Virtual input device for software-generated events"
+    default y
+    depends on DT_HAS_ZMK_VIRTUAL_INPUT_ENABLED
+```
+
+**`drivers/input/CMakeLists.txt`** に追加:
+```cmake
+zephyr_library_sources_ifdef(CONFIG_ZMK_VIRTUAL_INPUT vmouse_shim.c)
+```
+
+### 4. DTノード: `boards/shields/xiaord/xiaord.overlay` に追加
+
+```dts
+vmouse: vmouse {
+    compatible = "zmk,virtual-input";
+};
+
+vmouse_listener: vmouse_listener {
+    compatible = "zmk,input-listener";
+    device = <&vmouse>;
 };
 ```
 
-Prospector との違い：`&st7789` → `&gc9x01x`（ボード依存）
+### 5. `virtual_buttons.c` 修正
 
-### 2. `xiaord.conf` への追加
+```c
+// ファイルスコープ
+static const struct device *vmouse_dev = DEVICE_DT_GET(DT_NODELABEL(vmouse));
 
-```kconfig
-# ディスプレイ有効化
-CONFIG_ZMK_DISPLAY=y
-
-# カスタムステータス画面（独自UIを作る場合）
-# CONFIG_ZMK_DISPLAY_STATUS_SCREEN_CUSTOM=y
-
-# LVGL バッファ・メモリ設定
-CONFIG_LV_Z_VDB_SIZE=50
-CONFIG_LV_Z_MEM_POOL_SIZE=10000
-
-# カラー設定（GC9X01X は RGB565）
-CONFIG_LV_COLOR_DEPTH_16=y
-
-# リフレッシュ周期
-CONFIG_ZMK_DISPLAY_REFRESH_PERIOD_MS=20
-
-# スレッドスタック
-CONFIG_ZMK_DISPLAY_DEDICATED_THREAD_STACK_SIZE=4096
-
-# 使用するLVGLウィジェット（必要なものを選択）
-CONFIG_LV_USE_LABEL=y
-CONFIG_LV_USE_IMG=y
-CONFIG_LV_USE_ARC=y
+// cb_key_btn内: NULL → vmouse_dev に変更
+input_report_key(vmouse_dev, key, 1, true, K_NO_WAIT);
 ```
 
-### 3. `module.yml`（既存のまま使用可能）
+## 修正対象ファイル
 
-```yaml
-name: zmk-module-xiaord
-build:
-  cmake: .
-  kconfig: Kconfig
-  settings:
-    board_root: .
-    dts_root: .
-  depends:
-    - lvgl   # ← 既に記載済み
+| ファイル | 操作 |
+|---------|------|
+| `dts/bindings/zmk,virtual-input.yaml` | 新規 |
+| `drivers/input/vmouse_shim.c` | 新規 |
+| `drivers/input/Kconfig` | 追記 |
+| `drivers/input/CMakeLists.txt` | 追記 |
+| `boards/shields/xiaord/xiaord.overlay` | 追記 |
+| `src/display/virtual_buttons.c` | 修正（NULL → vmouse_dev） |
+
+全パスのプレフィックス: `zmk_modules/zmk-module-xiaord/`
+
+## Verification
+
+```bash
+./build.sh keyboards/zmk-config-genfish/build.yaml -p
 ```
-
-### 4. 独自ステータス画面（任意）
-
-Prospector は `src/` 以下でカスタムUIを実装している：
-
-```
-src/
-├── custom_status_screen.c  # LVGLウィジェット配置
-├── brightness.c            # 輝度制御
-├── display_rotate_init.c   # 画面回転
-├── fonts/
-└── widgets/
-```
-
-これを再現するには `CONFIG_ZMK_DISPLAY_STATUS_SCREEN_CUSTOM=y` を有効にし、`zmk_display_status_screen()` を実装する必要がある。
-
-### 5. LVGL カスタマイズ（任意）
-
-Prospector は `modules/lvgl/lvgl.c` でZephyr標準のlvgl.cを置き換えている（バッファ管理のカスタマイズ）。基本的な表示だけなら不要。
-
----
-
-## Prospector との構造差分
-
-```
-prospector-zmk-module/          xiaord に追加する場合
-├── drivers/display/            不要（GC9X01X はZMK既存ドライバ使用）
-│   ├── display_st7789v.c
-│   └── ...
-├── modules/lvgl/               任意（高度なカスタマイズ時のみ）
-├── boards/shields/prospector/
-│   ├── prospector.overlay      → xiaord.overlay に chosen 追加
-│   ├── Kconfig.defconfig       → xiaord のKconfigに CONFIG_ZMK_DISPLAY 追加
-│   └── src/                   任意（カスタムUI作る場合）
-└── zephyr/module.yml           既存のものでOK
-```
-
----
-
-## 実装の優先順位
-
-| ステップ | 内容 | 難易度 |
-|---|---|---|
-| 1 | `xiaord.conf` に `CONFIG_ZMK_DISPLAY=y` と LVGL 設定追加 | 低 |
-| 2 | `xiaord.overlay` に `zephyr,display` chosen 追加 | 低 |
-| 3 | ビルド確認・デフォルトステータス画面の動作確認 | 中 |
-| 4 | カスタムステータス画面の実装（LVGL widgets） | 高 |
-| 5 | タッチ入力とディスプレイUIの連携 | 高 |
-
----
-
-## 備考・インサイト
-
-- `seeed_xiao_round_display` シールドが既に GC9X01X ドライバを設定しているため、Prospector のように独自ドライバを書く必要はない。必要なのは `zephyr,display` のマッピングと ZMK 表示サブシステムの有効化のみ
-- Prospector の LVGL オーバーライド（`modules/lvgl/lvgl.c`）は、ZMK 標準の lvgl.c をビルドから除外し独自版に差し替えるテクニック。`zephyr_library_amend()` + `HEADER_FILE_ONLY` プロパティで実現
-- 円形ディスプレイ（240×240）では LVGL の `LV_DISP_ROT_NONE` で動作するが、表示コンテンツが矩形前提の場合は `display_rotate_init.c` のような回転初期化が有効
+コンパイルエラーなしでビルドが通ること。
