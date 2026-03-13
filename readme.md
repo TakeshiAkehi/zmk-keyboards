@@ -30,6 +30,8 @@ Ensure you have the following installed on your system:
 | `--init` | Create fresh workspace and container (first-time setup) |
 | `--update` | Update ZMK sources (`west update`) |
 | `-p`, `--pristine` | Force pristine rebuild |
+| `-t NAME`, `--target NAME` | Build only targets matching NAME (repeatable) |
+| `--extra PATH` | Inject a local ZMK module from `zmk_modules/` (repeatable) |
 | `-h`, `--help` | Show help |
 
 ### Examples
@@ -40,6 +42,12 @@ Ensure you have the following installed on your system:
 
 # Rebuild after keymap change (most common)
 ./build.sh keyboards/zmk-config-fish/build.yaml -p
+
+# Build a single target
+./build.sh keyboards/zmk-config-fish/build.yaml -p -t fish_dongle
+
+# Build with a local module override
+./build.sh keyboards/zmk-config-fish/build.yaml -p -t fish_dongle --extra zmk_modules/zmk-module-xiaord
 
 # Update ZMK sources after editing west.yml
 ./build.sh --update keyboards/zmk-config-fish/build.yaml
@@ -68,7 +76,8 @@ Ensure you have the following installed on your system:
 ├── zmk_work/               # Build workspaces (per keyboard, gitignored)
 │   ├── zmk-config-d3kb2/
 │   └── zmk-config-fish/
-├── zmk_modules/            # Local module overrides (optional, gitignored)
+├── zmk_modules/            # ZMK module submodules
+│   └── zmk-module-xiaord/  # Xiaord round-display module (git submodule)
 └── context_doc/            # Architecture decision records and design docs
 ```
 
@@ -92,23 +101,21 @@ Ensure you have the following installed on your system:
    - `west build` runs inside the container for each target.
    - Output `.uf2` files are copied to `zmk_work/<keyboard-name>/`.
 
-## Local Module Override
+## Local Module Injection
 
-For developing ZMK modules locally without pushing to a remote repository:
+`zmk_modules/` contains ZMK module submodules tracked in this repository.
+Modules are injected into builds using the `--extra` flag:
 
-1. Create a `zmk_modules/` directory at the repository root
-2. Place your module (must contain `zephyr/module.yml`) inside it
-3. Build normally — modules are auto-detected and injected via `EXTRA_ZEPHYR_MODULES`
-
-```plaintext
-zmk_modules/
-├── my-new-driver/
-│   └── zephyr/module.yml
-└── zmk-pmw3610-driver/      # Override an existing remote module
-    └── zephyr/module.yml
+```sh
+./build.sh keyboards/zmk-config-fish/build.yaml -p -t fish_dongle \
+    --extra zmk_modules/zmk-module-xiaord
 ```
 
-Existing containers are automatically recreated when `zmk_modules/` is added. The directory is mounted read-only in the container.
+The `--extra` flag can be repeated for multiple modules. In interactive mode,
+an fzf picker lists available modules from `zmk_modules/`.
+
+Each module must contain a `zephyr/module.yml`. The `zmk_modules/` directory
+is mounted read-only inside the build container.
 
 ## Example YAML Configuration
 

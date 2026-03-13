@@ -170,7 +170,10 @@ select_keyboards() {
     for f in "$REPO_ROOT"/keyboards/*/build.yaml; do
         [[ -f "$f" ]] && candidates+=("$f")
     done
-    [[ ${#candidates[@]} -eq 0 ]] && error "no build.yaml files found in keyboards/"
+    while IFS= read -r f; do
+        candidates+=("$f")
+    done < <(find "$REPO_ROOT/zmk_modules" -name "build.yaml" 2>/dev/null)
+    [[ ${#candidates[@]} -eq 0 ]] && error "no build.yaml files found in keyboards/ or zmk_modules/"
 
     if ! command -v fzf &>/dev/null; then
         error "fzf is required for interactive selection. Specify a build.yaml file as argument instead."
